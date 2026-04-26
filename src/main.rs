@@ -129,16 +129,16 @@ async fn proxy_repo_root(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    proxy_repo_request(
+    proxy_repo_request(ProxyRepoRequest {
         owner,
-        repo,
-        None,
+        repo_name: repo,
+        repo_path: None,
         state,
         original_uri,
         method,
         headers,
         body,
-    )
+    })
     .await
 }
 
@@ -150,20 +150,20 @@ async fn proxy_repo_path(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    proxy_repo_request(
+    proxy_repo_request(ProxyRepoRequest {
         owner,
-        repo,
-        Some(repo_path),
+        repo_name: repo,
+        repo_path: Some(repo_path),
         state,
         original_uri,
         method,
         headers,
         body,
-    )
+    })
     .await
 }
 
-async fn proxy_repo_request(
+struct ProxyRepoRequest {
     owner: String,
     repo_name: String,
     repo_path: Option<String>,
@@ -172,7 +172,19 @@ async fn proxy_repo_request(
     method: Method,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Response, AppError> {
+}
+
+async fn proxy_repo_request(request: ProxyRepoRequest) -> Result<Response, AppError> {
+    let ProxyRepoRequest {
+        owner,
+        repo_name,
+        repo_path,
+        state,
+        original_uri,
+        method,
+        headers,
+        body,
+    } = request;
     let repo = format!("{owner}/{repo_name}");
     let github_path = match repo_path {
         Some(repo_path) => format!("repos/{repo}/{repo_path}"),
@@ -227,7 +239,7 @@ async fn create_installation_token_for_repo(
     headers: &HeaderMap,
 ) -> Result<InstallationTokenResponse, AppError> {
     debug!(repo = %repo, "installation token flow started");
-    let bearer_token = match extract_bearer_token(&headers) {
+    let bearer_token = match extract_bearer_token(headers) {
         Ok(token) => {
             debug!(repo = %repo, "authorization bearer token found");
             Some(token)
@@ -246,7 +258,7 @@ async fn create_installation_token_for_repo(
     let source_subject = state.subject_validator.validate(bearer_token.as_deref())?;
     debug!(repo = %repo, subject = %source_subject, "source subject accepted");
     debug!(repo = %repo, subject = %source_subject, "selecting installation config");
-    let installation = state.installation(&repo, &source_subject)?;
+    let installation = state.installation(repo, &source_subject)?;
     debug!(
         repo = %repo,
         subject = %source_subject,
