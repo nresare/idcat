@@ -8,7 +8,6 @@ It reads a GitHub App RSA private key from the filesystem, signs a short-lived G
 
 ```toml
 bind_address = "0.0.0.0:8080"
-github_api_url = "https://api.github.com"
 github_app_id = 123456
 private_key_directory = "/var/run/secrets/idcat"
 

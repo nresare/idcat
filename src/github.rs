@@ -17,6 +17,7 @@ use tracing::debug;
 
 const GITHUB_API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
 const GITHUB_API_VERSION: &str = "2022-11-28";
+const GITHUB_API_URL: &str = "https://api.github.com";
 const INSTALLATION_TOKEN_CACHE_TTL: Duration = Duration::from_secs(50 * 60);
 
 #[derive(Clone)]
@@ -69,7 +70,7 @@ pub struct InstallationTokenResponse {
 }
 
 impl GithubClient {
-    pub fn new(api_url: String, app_id: u64) -> anyhow::Result<Self> {
+    pub fn new(app_id: u64) -> anyhow::Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("idcat"));
         headers.insert(
@@ -86,7 +87,7 @@ impl GithubClient {
             .context("failed to build GitHub API client")?;
         Ok(Self {
             client,
-            api_url: api_url.trim_end_matches('/').to_string(),
+            api_url: GITHUB_API_URL.to_string(),
             app_id,
             cache: Arc::new(Mutex::new(GithubCache::default())),
         })
