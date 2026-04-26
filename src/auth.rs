@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: The idcat contributors
+
 use crate::config::AuthenticationConfig;
 use crate::kubernetes;
 use anyhow::Context;

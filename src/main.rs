@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: The idcat contributors
+
 mod auth;
 mod config;
 mod error;

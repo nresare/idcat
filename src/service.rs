@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: The idcat contributors
+
 use crate::auth;
 use crate::config::{AuthenticationConfig, Config, InstallationConfig};
 use crate::error::AppError;

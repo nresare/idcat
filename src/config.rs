@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: The idcat contributors
+
 use anyhow::Context;
 use serde::Deserialize;
 use std::collections::BTreeMap;

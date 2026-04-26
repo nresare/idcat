@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: The idcat contributors
+
 use crate::config::InstallationConfig;
 use crate::jwt::build_github_app_jwt;
 use anyhow::Context;

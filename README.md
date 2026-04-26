@@ -84,3 +84,7 @@ cargo run -- --config-file idcat.toml --debug
 
 GitHub App installation IDs are cached in memory after the first lookup. Installation tokens are
 cached in memory for 50 minutes per repo and permission set.
+
+## License
+
+MIT
