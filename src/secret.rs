@@ -1,6 +1,7 @@
 use anyhow::Context;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct FilePrivateKeyStore {
@@ -16,12 +17,17 @@ impl FilePrivateKeyStore {
 
     pub fn private_key_pem(&self, secret_key: &str) -> anyhow::Result<String> {
         let path = self.path_for_key(secret_key)?;
-        fs::read_to_string(&path).with_context(|| {
-            format!(
-                "failed to read GitHub App private key from '{}'",
-                path.display()
-            )
-        })
+        debug!(secret_key = %secret_key, path = %path.display(), "reading GitHub App private key");
+        fs::read_to_string(&path)
+            .with_context(|| {
+                format!(
+                    "failed to read GitHub App private key from '{}'",
+                    path.display()
+                )
+            })
+            .inspect(|_| {
+                debug!(secret_key = %secret_key, "GitHub App private key loaded");
+            })
     }
 
     fn path_for_key(&self, secret_key: &str) -> anyhow::Result<PathBuf> {

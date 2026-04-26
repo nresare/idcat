@@ -47,7 +47,7 @@ impl Config {
             .map_err(|error| anyhow::anyhow!("Could not parse config file '{path}': {error}"))
     }
 
-    pub fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self, disable_auth: bool) -> anyhow::Result<()> {
         if self.bind_address.is_empty() {
             anyhow::bail!("bind_address must not be empty");
         }
@@ -60,7 +60,9 @@ impl Config {
         if self.private_key_directory.is_empty() {
             anyhow::bail!("private_key_directory must not be empty");
         }
-        self.authentication.validate()?;
+        if !disable_auth {
+            self.authentication.validate()?;
+        }
         if self.installations.is_empty() {
             anyhow::bail!("at least one [[installation]] entry is required");
         }
@@ -90,7 +92,7 @@ impl Config {
                     installation.repo
                 );
             }
-            if installation.allowed_subjects.is_empty() {
+            if !disable_auth && installation.allowed_subjects.is_empty() {
                 anyhow::bail!(
                     "installation '{}' must define at least one allowed_subject",
                     installation.repo
@@ -165,7 +167,7 @@ allowed_subjects = ["system:serviceaccount:idelephant:default"]
         )
         .unwrap();
 
-        config.validate().unwrap();
+        config.validate(false).unwrap();
         assert_eq!(config.bind_address, "0.0.0.0:8080");
         assert_eq!(config.github_api_url, "https://api.github.com");
         assert_eq!(config.private_key_directory, "/var/run/secrets/idcat");
@@ -204,10 +206,26 @@ allowed_subjects = ["system:serviceaccount:idelephant:default"]
         )
         .unwrap();
 
-        let error = config.validate().unwrap_err();
+        let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
             "duplicate installation repo 'github_user/repo_name'"
         );
+    }
+
+    #[test]
+    fn disable_auth_skips_authentication_and_allowed_subject_validation() {
+        let config: Config = toml::from_str(
+            r#"
+github_app_id = 42
+
+[[installation]]
+repo = "github_user/repo_name"
+secret_key = "private-key.pem"
+"#,
+        )
+        .unwrap();
+
+        config.validate(true).unwrap();
     }
 }

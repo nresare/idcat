@@ -48,18 +48,20 @@ curl -X POST \
   http://localhost:8080/installation-token/github_user/repo_name
 ```
 
-The response is GitHub's installation token response:
+The response body is the GitHub installation token:
 
-```json
-{
-  "token": "ghs_...",
-  "expires_at": "2026-04-26T16:00:00Z",
-  "permissions": {
-    "contents": "read",
-    "metadata": "read"
-  },
-  "repository_selection": "selected"
-}
+```text
+ghs_...
+```
+
+To proxy a repository-scoped GitHub API request through an installation token, prefix the GitHub
+`/repos/{owner}/{repo}` path with `/proxy`. The owner/repo pair is extracted from the path and used
+to select the configured installation and authorization policy:
+
+```sh
+curl -X GET \
+  -H "Authorization: Bearer $KUBERNETES_JWT" \
+  http://localhost:8080/proxy/repos/github_user/repo_name/contents/README.md
 ```
 
 ## Running
@@ -67,3 +69,18 @@ The response is GitHub's installation token response:
 ```sh
 cargo run -- --config-file idcat.toml
 ```
+
+For local testing, authentication and `allowed_subjects` checks can be bypassed:
+
+```sh
+cargo run -- --config-file idcat.toml --disable-auth
+```
+
+Use `--debug` to log detailed installation-token flow steps:
+
+```sh
+cargo run -- --config-file idcat.toml --debug
+```
+
+GitHub App installation IDs are cached in memory after the first lookup. Installation tokens are
+cached in memory for 50 minutes per repo and permission set.
