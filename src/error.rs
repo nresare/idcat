@@ -5,6 +5,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use tracing::{error, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -29,6 +30,14 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        match &self {
+            AppError::Internal(_) => {
+                error!(status = status.as_u16(), error = %message, "request failed");
+            }
+            AppError::NotFound(_) | AppError::Unauthorized(_) => {
+                warn!(status = status.as_u16(), error = %message, "request rejected");
+            }
+        }
         (status, Json(ErrorBody { error: &message })).into_response()
     }
 }
