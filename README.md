@@ -17,18 +17,23 @@ audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 
 [[installation]]
-allowed_subjects = ["system:serviceaccount:idelephant:default"]
 repo = "github_user/repo_name"
 secret_key = "private-key.pem"
 
+[installation.required_claims]
+organization_slug = "my-buildkite-org"
+pipeline_slug = "deploy-idcat"
+
 [[installation]]
-allowed_subjects = ["system:serviceaccount:default:default"]
 repo = "github_user/other_repo"
 secret_key = "other-private-key.pem"
 
 [installation.permissions]
 contents = "read"
 metadata = "read"
+
+[installation.required_claims]
+sub = "system:serviceaccount:default:default"
 ```
 
 Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private_key_directory`, but `idcat` only reads files from the filesystem.
@@ -70,7 +75,7 @@ curl -X GET \
 cargo run -- --config-file idcat.toml
 ```
 
-For local testing, authentication and `allowed_subjects` checks can be bypassed:
+For local testing, authentication and `required_claims` checks can be bypassed:
 
 ```sh
 cargo run -- --config-file idcat.toml --disable-auth

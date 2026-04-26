@@ -254,11 +254,12 @@ async fn create_installation_token_for_repo(
         }
         Err(error) => return Err(error),
     };
-    debug!(repo = %repo, "validating source subject");
-    let source_subject = state.subject_validator.validate(bearer_token.as_deref())?;
-    debug!(repo = %repo, subject = %source_subject, "source subject accepted");
+    debug!(repo = %repo, "validating source token claims");
+    let source_claims = state.subject_validator.validate(bearer_token.as_deref())?;
+    let source_subject = source_claims.subject();
+    debug!(repo = %repo, subject = %source_subject, "source token claims accepted");
     debug!(repo = %repo, subject = %source_subject, "selecting installation config");
-    let installation = state.installation(repo, &source_subject)?;
+    let installation = state.installation(repo, &source_claims)?;
     debug!(
         repo = %repo,
         subject = %source_subject,

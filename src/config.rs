@@ -37,7 +37,7 @@ pub struct InstallationConfig {
     pub repo: String,
     pub secret_key: String,
     #[serde(default)]
-    pub allowed_subjects: Vec<String>,
+    pub required_claims: BTreeMap<String, String>,
     #[serde(default)]
     pub permissions: BTreeMap<String, String>,
 }
@@ -95,9 +95,9 @@ impl Config {
                     installation.repo
                 );
             }
-            if !disable_auth && installation.allowed_subjects.is_empty() {
+            if !disable_auth && installation.required_claims.is_empty() {
                 anyhow::bail!(
-                    "installation '{}' must define at least one allowed_subject",
+                    "installation '{}' must define at least one required_claim",
                     installation.repo
                 );
             }
@@ -165,7 +165,9 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 [[installation]]
 repo = "github_user/repo_name"
 secret_key = "private-key.pem"
-allowed_subjects = ["system:serviceaccount:idelephant:default"]
+
+[installation.required_claims]
+sub = "system:serviceaccount:idelephant:default"
 "#,
         )
         .unwrap();
@@ -199,12 +201,16 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 [[installation]]
 repo = "github_user/repo_name"
 secret_key = "first.pem"
-allowed_subjects = ["system:serviceaccount:idelephant:default"]
+
+[installation.required_claims]
+sub = "system:serviceaccount:idelephant:default"
 
 [[installation]]
 repo = "github_user/repo_name"
 secret_key = "second.pem"
-allowed_subjects = ["system:serviceaccount:idelephant:default"]
+
+[installation.required_claims]
+sub = "system:serviceaccount:idelephant:default"
 "#,
         )
         .unwrap();
@@ -217,7 +223,7 @@ allowed_subjects = ["system:serviceaccount:idelephant:default"]
     }
 
     #[test]
-    fn disable_auth_skips_authentication_and_allowed_subject_validation() {
+    fn disable_auth_skips_authentication_and_required_claims_validation() {
         let config: Config = toml::from_str(
             r#"
 github_app_id = 42
