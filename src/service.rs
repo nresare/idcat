@@ -8,6 +8,8 @@ use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
 use jsonwebtoken::{Validation, decode};
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -29,7 +31,12 @@ pub fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Result<Ap
 }
 
 impl AppState {
-    pub fn installation(&self, repo: &str, subject: &str) -> Result<&InstallationConfig, AppError> {
+    pub fn installation(
+        &self,
+        repo: &str,
+        claims: &SourceClaims,
+    ) -> Result<&InstallationConfig, AppError> {
+        let subject = claims.subject();
         debug!(repo = %repo, subject = %subject, "searching configured installations");
         let installation = self
             .installations
@@ -38,13 +45,11 @@ impl AppState {
             .ok_or_else(|| AppError::NotFound(format!("unknown installation repo '{repo}'")))?;
 
         if self.subject_validator.auth_enabled()
-            && !installation
-                .allowed_subjects
-                .iter()
-                .any(|allowed_subject| allowed_subject == subject)
+            && let Some((claim_name, required_value)) =
+                claims.first_missing_required_claim(&installation.required_claims)
         {
             return Err(AppError::Unauthorized(format!(
-                "subject '{subject}' is not allowed to use repo '{repo}'"
+                "claim '{claim_name}' must equal '{required_value}' to use repo '{repo}'"
             )));
         }
 
@@ -69,9 +74,43 @@ enum SubjectValidationMode {
     Enabled(AuthenticationConfig),
 }
 
-#[derive(Debug, Deserialize)]
-struct SourceClaims {
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceClaims {
     sub: String,
+    #[serde(flatten)]
+    claims: BTreeMap<String, Value>,
+}
+
+impl SourceClaims {
+    fn unauthenticated() -> Self {
+        Self {
+            sub: "unauthenticated".to_string(),
+            claims: BTreeMap::new(),
+        }
+    }
+
+    pub fn subject(&self) -> &str {
+        &self.sub
+    }
+
+    fn first_missing_required_claim<'a>(
+        &self,
+        required_claims: &'a BTreeMap<String, String>,
+    ) -> Option<(&'a str, &'a str)> {
+        required_claims
+            .iter()
+            .find(|(claim_name, required_value)| {
+                self.claim_value(claim_name.as_str()) != Some(required_value.as_str())
+            })
+            .map(|(claim_name, required_value)| (claim_name.as_str(), required_value.as_str()))
+    }
+
+    fn claim_value(&self, claim_name: &str) -> Option<&str> {
+        if claim_name == "sub" {
+            return Some(&self.sub);
+        }
+        self.claims.get(claim_name).and_then(Value::as_str)
+    }
 }
 
 impl SubjectValidator {
@@ -84,11 +123,11 @@ impl SubjectValidator {
         Self { mode }
     }
 
-    pub fn validate(&self, bearer_token: Option<&str>) -> Result<String, AppError> {
+    pub fn validate(&self, bearer_token: Option<&str>) -> Result<SourceClaims, AppError> {
         let authentication = match &self.mode {
             SubjectValidationMode::Disabled => {
-                debug!("source subject validation skipped because auth is disabled");
-                return Ok("unauthenticated".to_string());
+                debug!("source token claim validation skipped because auth is disabled");
+                return Ok(SourceClaims::unauthenticated());
             }
             SubjectValidationMode::Enabled(authentication) => authentication,
         };
@@ -113,10 +152,61 @@ impl SubjectValidator {
                 AppError::Unauthorized(format!("failed to validate source token: {error}"))
             })?;
         debug!(subject = %decoded.claims.sub, "source token claims validated");
-        Ok(decoded.claims.sub)
+        Ok(decoded.claims)
     }
 
     pub fn auth_enabled(&self) -> bool {
         matches!(self.mode, SubjectValidationMode::Enabled(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceClaims;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn required_claims_match_subject_and_custom_claims() {
+        let claims: SourceClaims = serde_json::from_value(json!({
+            "sub": "system:serviceaccount:default:default",
+            "organization_slug": "my-buildkite-org",
+            "pipeline_slug": "deploy-idcat"
+        }))
+        .unwrap();
+        let required_claims = BTreeMap::from([
+            (
+                "organization_slug".to_string(),
+                "my-buildkite-org".to_string(),
+            ),
+            ("pipeline_slug".to_string(), "deploy-idcat".to_string()),
+            (
+                "sub".to_string(),
+                "system:serviceaccount:default:default".to_string(),
+            ),
+        ]);
+
+        assert_eq!(claims.first_missing_required_claim(&required_claims), None);
+    }
+
+    #[test]
+    fn required_claims_reject_missing_or_different_values() {
+        let claims: SourceClaims = serde_json::from_value(json!({
+            "sub": "system:serviceaccount:default:default",
+            "pipeline_slug": "other-pipeline"
+        }))
+        .unwrap();
+        let required_claims = BTreeMap::from([
+            (
+                "organization_slug".to_string(),
+                "my-buildkite-org".to_string(),
+            ),
+            ("pipeline_slug".to_string(), "deploy-idcat".to_string()),
+        ]);
+
+        assert_eq!(
+            claims.first_missing_required_claim(&required_claims),
+            Some(("organization_slug", "my-buildkite-org"))
+        );
     }
 }

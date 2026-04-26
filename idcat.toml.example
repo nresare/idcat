@@ -7,15 +7,20 @@ audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 
 [[installation]]
-allowed_subjects = ["system:serviceaccount:idelephant:default"]
 repo = "github_user/repo_name"
 secret_key = "private-key.pem"
 
+[installation.required_claims]
+organization_slug = "my-buildkite-org"
+pipeline_slug = "deploy-idcat"
+
 [[installation]]
-allowed_subjects = ["system:serviceaccount:default:default"]
 repo = "github_user/other_repo"
 secret_key = "other-private-key.pem"
 
 [installation.permissions]
 contents = "read"
 metadata = "read"
+
+[installation.required_claims]
+sub = "system:serviceaccount:default:default"
