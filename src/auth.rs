@@ -170,10 +170,10 @@ fn ensure_jwk_compatible(jwk: &Jwk, algorithm: Algorithm) -> anyhow::Result<()> 
 }
 
 fn jwk_matches_algorithm(jwk: &Jwk, algorithm: Algorithm) -> bool {
-    if let Some(public_key_use) = &jwk.common.public_key_use {
-        if *public_key_use != PublicKeyUse::Signature {
-            return false;
-        }
+    if let Some(public_key_use) = &jwk.common.public_key_use
+        && *public_key_use != PublicKeyUse::Signature
+    {
+        return false;
     }
 
     match algorithm {
