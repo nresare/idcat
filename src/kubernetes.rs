@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: The idcat contributors
 
 use anyhow::Context;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
 pub const KUBERNETES_SERVICE_HOST: &str = "https://kubernetes.default.svc";
 const KUBERNETES_CA_CERT_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";

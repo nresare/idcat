@@ -13,22 +13,22 @@ mod service;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::github::InstallationTokenResponse;
-use crate::service::{build_app_state, AppState};
+use crate::service::{AppState, build_app_state};
 use axum::body::{Body, Bytes};
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{header, HeaderMap, HeaderName, Method, Uri};
+use axum::http::{HeaderMap, HeaderName, Method, Uri, header};
 use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use clap::Parser;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
 use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

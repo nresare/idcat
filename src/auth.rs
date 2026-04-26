@@ -5,7 +5,7 @@ use crate::config::AuthenticationConfig;
 use crate::kubernetes;
 use anyhow::Context;
 use jsonwebtoken::jwk::{Jwk, JwkSet, KeyAlgorithm, PublicKeyUse};
-use jsonwebtoken::{decode_header, Algorithm, DecodingKey};
+use jsonwebtoken::{Algorithm, DecodingKey, decode_header};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use tracing::{debug, info};

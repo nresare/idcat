@@ -6,7 +6,7 @@ use crate::config::{AuthenticationConfig, Config, InstallationConfig};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
-use jsonwebtoken::{decode, Validation};
+use jsonwebtoken::{Validation, decode};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;

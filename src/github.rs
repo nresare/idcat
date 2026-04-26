@@ -5,7 +5,7 @@ use crate::config::InstallationConfig;
 use crate::jwt::build_github_app_jwt;
 use anyhow::Context;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HOST, USER_AGENT,
+    ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HOST, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
 use reqwest::{Client, Method, Response};
 use serde::{Deserialize, Serialize};

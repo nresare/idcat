@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: The idcat contributors
 
 use anyhow::Context;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,7 +48,7 @@ fn now() -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::build_github_app_jwt_at;
-    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+    use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
     use serde_json::Value;
 
     const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
