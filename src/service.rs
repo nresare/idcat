@@ -23,7 +23,7 @@ pub fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Result<Ap
     Ok(AppState {
         installations: Arc::new(config.installations.clone()),
         subject_validator: SubjectValidator::new(config.authentication.clone(), disable_auth),
-        github: GithubClient::new(config.github_api_url.clone(), config.github_app_id)?,
+        github: GithubClient::new(config.github_app_id)?,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
     })
 }

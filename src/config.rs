@@ -10,8 +10,6 @@ use std::path::Path;
 pub struct Config {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
-    #[serde(default = "default_github_api_url")]
-    pub github_api_url: String,
     pub github_app_id: u64,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
@@ -53,9 +51,6 @@ impl Config {
     pub fn validate(&self, disable_auth: bool) -> anyhow::Result<()> {
         if self.bind_address.is_empty() {
             anyhow::bail!("bind_address must not be empty");
-        }
-        if self.github_api_url.is_empty() {
-            anyhow::bail!("github_api_url must not be empty");
         }
         if self.github_app_id == 0 {
             anyhow::bail!("github_app_id must be greater than 0");
@@ -126,10 +121,6 @@ fn default_bind_address() -> String {
     "0.0.0.0:8080".to_string()
 }
 
-fn default_github_api_url() -> String {
-    "https://api.github.com".to_string()
-}
-
 fn default_private_key_directory() -> String {
     "/var/run/secrets/idcat".to_string()
 }
@@ -172,7 +163,6 @@ allowed_subjects = ["system:serviceaccount:idelephant:default"]
 
         config.validate(false).unwrap();
         assert_eq!(config.bind_address, "0.0.0.0:8080");
-        assert_eq!(config.github_api_url, "https://api.github.com");
         assert_eq!(config.private_key_directory, "/var/run/secrets/idcat");
     }
 
