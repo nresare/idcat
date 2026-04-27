@@ -10,11 +10,12 @@ use std::path::Path;
 pub struct Config {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
-    pub github_app_id: u64,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
     #[serde(default)]
     pub authentication: AuthenticationConfig,
+    #[serde(rename = "github_app", default)]
+    pub github_apps: Vec<GithubAppConfig>,
     #[serde(rename = "installation", default)]
     pub installations: Vec<InstallationConfig>,
 }
@@ -31,9 +32,15 @@ pub struct AuthenticationConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct InstallationConfig {
-    pub repo: String,
+pub struct GithubAppConfig {
+    pub name: String,
+    pub app_id: u64,
     pub secret_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstallationConfig {
+    pub github_app: String,
     #[serde(default)]
     pub required_claims: BTreeMap<String, String>,
     #[serde(default)]
@@ -52,9 +59,6 @@ impl Config {
         if self.bind_address.is_empty() {
             anyhow::bail!("bind_address must not be empty");
         }
-        if self.github_app_id == 0 {
-            anyhow::bail!("github_app_id must be greater than 0");
-        }
         if self.private_key_directory.is_empty() {
             anyhow::bail!("private_key_directory must not be empty");
         }
@@ -65,39 +69,61 @@ impl Config {
             anyhow::bail!("at least one [[installation]] entry is required");
         }
 
-        let mut repos = std::collections::HashSet::new();
-        for installation in &self.installations {
-            if installation.repo.is_empty() {
-                anyhow::bail!("installation repos must not be empty");
+        if self.github_apps.is_empty() {
+            anyhow::bail!("at least one [[github_app]] entry is required");
+        }
+        let mut github_apps = std::collections::HashSet::new();
+        for github_app in &self.github_apps {
+            if github_app.name.is_empty() {
+                anyhow::bail!("github_app names must not be empty");
             }
-            if !installation.repo.contains('/') {
+            if github_app.name.contains('/') {
+                anyhow::bail!("github_app '{}' name must not contain '/'", github_app.name);
+            }
+            if github_app.app_id == 0 {
                 anyhow::bail!(
-                    "installation repo '{}' must use owner/repo format",
-                    installation.repo
+                    "github_app '{}' app_id must be greater than 0",
+                    github_app.name
                 );
             }
-            if installation.secret_key.is_empty() {
-                anyhow::bail!(
-                    "installation '{}' must define secret_key",
-                    installation.repo
-                );
+            if github_app.secret_key.is_empty() {
+                anyhow::bail!("github_app '{}' must define secret_key", github_app.name);
             }
-            if Path::new(&installation.secret_key).is_absolute()
-                || installation.secret_key.contains("..")
+            if Path::new(&github_app.secret_key).is_absolute()
+                || github_app.secret_key.contains("..")
             {
                 anyhow::bail!(
-                    "installation '{}' secret_key must be a relative file name",
-                    installation.repo
+                    "github_app '{}' secret_key must be a relative file name",
+                    github_app.name
+                );
+            }
+            if !github_apps.insert(github_app.name.clone()) {
+                anyhow::bail!("duplicate github_app '{}'", github_app.name);
+            }
+        }
+
+        let mut installations = std::collections::HashSet::new();
+        for installation in &self.installations {
+            if installation.github_app.is_empty() {
+                anyhow::bail!("installation entries must define github_app");
+            }
+            if !github_apps.contains(&installation.github_app) {
+                anyhow::bail!(
+                    "installation references unknown github_app '{}'",
+                    installation.github_app
                 );
             }
             if !disable_auth && installation.required_claims.is_empty() {
                 anyhow::bail!(
-                    "installation '{}' must define at least one required_claim",
-                    installation.repo
+                    "installation for github_app '{}' must define at least one required_claim",
+                    installation.github_app
                 );
             }
-            if !repos.insert(installation.repo.clone()) {
-                anyhow::bail!("duplicate installation repo '{}'", installation.repo);
+            if !installations.insert(installation.github_app.clone()) {
+                anyhow::bail!(
+                    "duplicate installation for github_app '{}'",
+                    installation.github_app
+                );
             }
         }
         Ok(())
@@ -137,7 +163,10 @@ mod tests {
     fn parses_minimal_config() {
         let config: Config = toml::from_str(
             r#"
-github_app_id = 42
+[[github_app]]
+name = "default"
+app_id = 42
+secret_key = "private-key.pem"
 
 [authentication]
 audience = "idcat"
@@ -154,8 +183,7 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 """
 
 [[installation]]
-repo = "github_user/repo_name"
-secret_key = "private-key.pem"
+github_app = "default"
 
 [installation.required_claims]
 sub = "system:serviceaccount:idelephant:default"
@@ -169,10 +197,13 @@ sub = "system:serviceaccount:idelephant:default"
     }
 
     #[test]
-    fn rejects_duplicate_installation_repos() {
+    fn rejects_duplicate_installations_for_github_app() {
         let config: Config = toml::from_str(
             r#"
-github_app_id = 42
+[[github_app]]
+name = "default"
+app_id = 42
+secret_key = "private-key.pem"
 
 [authentication]
 audience = "idcat"
@@ -189,15 +220,13 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 """
 
 [[installation]]
-repo = "github_user/repo_name"
-secret_key = "first.pem"
+github_app = "default"
 
 [installation.required_claims]
 sub = "system:serviceaccount:idelephant:default"
 
 [[installation]]
-repo = "github_user/repo_name"
-secret_key = "second.pem"
+github_app = "default"
 
 [installation.required_claims]
 sub = "system:serviceaccount:idelephant:default"
@@ -208,7 +237,7 @@ sub = "system:serviceaccount:idelephant:default"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "duplicate installation repo 'github_user/repo_name'"
+            "duplicate installation for github_app 'default'"
         );
     }
 
@@ -216,11 +245,13 @@ sub = "system:serviceaccount:idelephant:default"
     fn disable_auth_skips_authentication_and_required_claims_validation() {
         let config: Config = toml::from_str(
             r#"
-github_app_id = 42
+[[github_app]]
+name = "default"
+app_id = 42
+secret_key = "private-key.pem"
 
 [[installation]]
-repo = "github_user/repo_name"
-secret_key = "private-key.pem"
+github_app = "default"
 "#,
         )
         .unwrap();
