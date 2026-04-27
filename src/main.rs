@@ -86,12 +86,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route(
-            "/installation-token/{owner}/{repo}",
+            "/installation-token/{github_app}/{owner}/{repo}",
             post(installation_token),
         )
-        .route("/proxy/repos/{owner}/{repo}", any(proxy_repo_root))
         .route(
-            "/proxy/repos/{owner}/{repo}/{*repo_path}",
+            "/proxy/{github_app}/repos/{owner}/{repo}",
+            any(proxy_repo_root),
+        )
+        .route(
+            "/proxy/{github_app}/repos/{owner}/{repo}/{*repo_path}",
             any(proxy_repo_path),
         )
         .layer(
@@ -112,17 +115,17 @@ async fn healthz() -> Json<Value> {
 }
 
 async fn installation_token(
-    Path((owner, repo)): Path<(String, String)>,
+    Path((github_app, owner, repo)): Path<(String, String, String)>,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<String, AppError> {
     let repo = format!("{owner}/{repo}");
-    let token = create_installation_token_for_repo(&repo, &state, &headers).await?;
+    let token = create_installation_token_for_repo(&github_app, &repo, &state, &headers).await?;
     Ok(token.token)
 }
 
 async fn proxy_repo_root(
-    Path((owner, repo)): Path<(String, String)>,
+    Path((github_app, owner, repo)): Path<(String, String, String)>,
     State(state): State<AppState>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
@@ -130,6 +133,7 @@ async fn proxy_repo_root(
     body: Bytes,
 ) -> Result<Response, AppError> {
     proxy_repo_request(ProxyRepoRequest {
+        github_app,
         owner,
         repo_name: repo,
         repo_path: None,
@@ -143,7 +147,7 @@ async fn proxy_repo_root(
 }
 
 async fn proxy_repo_path(
-    Path((owner, repo, repo_path)): Path<(String, String, String)>,
+    Path((github_app, owner, repo, repo_path)): Path<(String, String, String, String)>,
     State(state): State<AppState>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
@@ -151,6 +155,7 @@ async fn proxy_repo_path(
     body: Bytes,
 ) -> Result<Response, AppError> {
     proxy_repo_request(ProxyRepoRequest {
+        github_app,
         owner,
         repo_name: repo,
         repo_path: Some(repo_path),
@@ -164,6 +169,7 @@ async fn proxy_repo_path(
 }
 
 struct ProxyRepoRequest {
+    github_app: String,
     owner: String,
     repo_name: String,
     repo_path: Option<String>,
@@ -176,6 +182,7 @@ struct ProxyRepoRequest {
 
 async fn proxy_repo_request(request: ProxyRepoRequest) -> Result<Response, AppError> {
     let ProxyRepoRequest {
+        github_app,
         owner,
         repo_name,
         repo_path,
@@ -191,12 +198,13 @@ async fn proxy_repo_request(request: ProxyRepoRequest) -> Result<Response, AppEr
         None => format!("repos/{repo}"),
     };
     debug!(
+        github_app = %github_app,
         repo = %repo,
         github_path = %github_path,
         method = %method,
         "proxy request received"
     );
-    let token = create_installation_token_for_repo(&repo, &state, &headers).await?;
+    let token = create_installation_token_for_repo(&github_app, &repo, &state, &headers).await?;
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|error| AppError::Internal(format!("failed to convert HTTP method: {error}")))?;
     let upstream_response = state
@@ -217,6 +225,7 @@ async fn proxy_repo_request(request: ProxyRepoRequest) -> Result<Response, AppEr
         .await
         .map_err(|error| AppError::Internal(format!("failed to read proxied response: {error}")))?;
     debug!(
+        github_app = %github_app,
         repo = %repo,
         github_path = %github_path,
         status = status.as_u16(),
@@ -234,18 +243,20 @@ async fn proxy_repo_request(request: ProxyRepoRequest) -> Result<Response, AppEr
 }
 
 async fn create_installation_token_for_repo(
+    github_app_name: &str,
     repo: &str,
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<InstallationTokenResponse, AppError> {
-    debug!(repo = %repo, "installation token flow started");
+    debug!(github_app = %github_app_name, repo = %repo, "installation token flow started");
     let bearer_token = match extract_bearer_token(headers) {
         Ok(token) => {
-            debug!(repo = %repo, "authorization bearer token found");
+            debug!(github_app = %github_app_name, repo = %repo, "authorization bearer token found");
             Some(token)
         }
         Err(error) if !state.subject_validator.auth_enabled() => {
             debug!(
+                github_app = %github_app_name,
                 repo = %repo,
                 error = %error,
                 "authorization bearer token missing or invalid; continuing because auth is disabled"
@@ -254,29 +265,32 @@ async fn create_installation_token_for_repo(
         }
         Err(error) => return Err(error),
     };
-    debug!(repo = %repo, "validating source token claims");
+    debug!(github_app = %github_app_name, repo = %repo, "validating source token claims");
     let source_claims = state.subject_validator.validate(bearer_token.as_deref())?;
     let source_subject = source_claims.subject();
-    debug!(repo = %repo, subject = %source_subject, "source token claims accepted");
-    debug!(repo = %repo, subject = %source_subject, "selecting installation config");
-    let installation = state.installation(repo, &source_claims)?;
+    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
+    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "selecting GitHub App config");
+    let github_app = state.github_app(github_app_name)?;
+    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "selecting installation config");
+    let installation = state.installation(github_app_name, repo, &source_claims)?;
     debug!(
+        github_app = %github_app_name,
         repo = %repo,
         subject = %source_subject,
-        secret_key = %installation.secret_key,
+        secret_key = %github_app.secret_key,
         permission_count = installation.permissions.len(),
         "installation config selected"
     );
-    debug!(repo = %repo, secret_key = %installation.secret_key, "loading GitHub App private key");
+    debug!(github_app = %github_app_name, repo = %repo, secret_key = %github_app.secret_key, "loading GitHub App private key");
     let private_key_pem = state
         .private_key_store
-        .private_key_pem(&installation.secret_key)?;
-    debug!(repo = %repo, "requesting GitHub installation access token");
+        .private_key_pem(&github_app.secret_key)?;
+    debug!(github_app = %github_app_name, repo = %repo, "requesting GitHub installation access token");
     let token = state
         .github
-        .create_installation_token(&private_key_pem, installation)
+        .create_installation_token(github_app, &private_key_pem, repo, installation)
         .await?;
-    debug!(repo = %repo, expires_at = %token.expires_at, "GitHub installation access token created");
+    debug!(github_app = %github_app_name, repo = %repo, expires_at = %token.expires_at, "GitHub installation access token created");
     Ok(token)
 }
 

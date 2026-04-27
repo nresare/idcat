@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: The idcat contributors
 
 use crate::auth;
-use crate::config::{AuthenticationConfig, Config, InstallationConfig};
+use crate::config::{AuthenticationConfig, Config, GithubAppConfig, InstallationConfig};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
@@ -15,6 +15,7 @@ use tracing::debug;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub github_apps: Arc<Vec<GithubAppConfig>>,
     pub installations: Arc<Vec<InstallationConfig>>,
     pub subject_validator: SubjectValidator,
     pub github: GithubClient,
@@ -23,37 +24,57 @@ pub struct AppState {
 
 pub fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Result<AppState> {
     Ok(AppState {
+        github_apps: Arc::new(config.github_apps.clone()),
         installations: Arc::new(config.installations.clone()),
         subject_validator: SubjectValidator::new(config.authentication.clone(), disable_auth),
-        github: GithubClient::new(config.github_app_id)?,
+        github: GithubClient::new()?,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
     })
 }
 
 impl AppState {
+    pub fn github_app(&self, github_app_name: &str) -> Result<&GithubAppConfig, AppError> {
+        debug!(github_app = %github_app_name, "searching configured GitHub apps");
+        self.github_apps
+            .iter()
+            .find(|github_app| github_app.name == github_app_name)
+            .ok_or_else(|| AppError::NotFound(format!("unknown github_app '{github_app_name}'")))
+    }
+
     pub fn installation(
         &self,
+        github_app_name: &str,
         repo: &str,
         claims: &SourceClaims,
     ) -> Result<&InstallationConfig, AppError> {
         let subject = claims.subject();
-        debug!(repo = %repo, subject = %subject, "searching configured installations");
+        debug!(
+            github_app = %github_app_name,
+            repo = %repo,
+            subject = %subject,
+            "searching configured installations"
+        );
         let installation = self
             .installations
             .iter()
-            .find(|installation| installation.repo == repo)
-            .ok_or_else(|| AppError::NotFound(format!("unknown installation repo '{repo}'")))?;
+            .find(|installation| installation.github_app == github_app_name)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "unknown installation for github_app '{github_app_name}'"
+                ))
+            })?;
 
         if self.subject_validator.auth_enabled()
             && let Some((claim_name, required_value)) =
                 claims.first_missing_required_claim(&installation.required_claims)
         {
             return Err(AppError::Unauthorized(format!(
-                "claim '{claim_name}' must equal '{required_value}' to use repo '{repo}'"
+                "claim '{claim_name}' must equal '{required_value}' to use repo '{repo}' with github_app '{github_app_name}'"
             )));
         }
 
         debug!(
+            github_app = %github_app_name,
             repo = %repo,
             subject = %subject,
             auth_enabled = self.subject_validator.auth_enabled(),

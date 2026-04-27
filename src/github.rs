@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-use crate::config::InstallationConfig;
+use crate::config::{GithubAppConfig, InstallationConfig};
 use crate::jwt::build_github_app_jwt;
 use anyhow::Context;
 use reqwest::header::{
@@ -24,7 +24,6 @@ const INSTALLATION_TOKEN_CACHE_TTL: Duration = Duration::from_secs(50 * 60);
 pub struct GithubClient {
     client: Client,
     api_url: String,
-    app_id: u64,
     cache: Arc<Mutex<GithubCache>>,
 }
 
@@ -36,6 +35,7 @@ struct GithubCache {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct InstallationTokenCacheKey {
+    github_app: String,
     repo: String,
     permissions: BTreeMap<String, String>,
 }
@@ -70,7 +70,7 @@ pub struct InstallationTokenResponse {
 }
 
 impl GithubClient {
-    pub fn new(app_id: u64) -> anyhow::Result<Self> {
+    pub fn new() -> anyhow::Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("idcat"));
         headers.insert(
@@ -88,43 +88,53 @@ impl GithubClient {
         Ok(Self {
             client,
             api_url: GITHUB_API_URL.to_string(),
-            app_id,
             cache: Arc::new(Mutex::new(GithubCache::default())),
         })
     }
 
     pub async fn create_installation_token(
         &self,
+        github_app: &GithubAppConfig,
         private_key_pem: &str,
+        repo: &str,
         installation: &InstallationConfig,
     ) -> anyhow::Result<InstallationTokenResponse> {
         let token_cache_key = InstallationTokenCacheKey {
-            repo: installation.repo.clone(),
+            github_app: github_app.name.clone(),
+            repo: repo.to_string(),
             permissions: installation.permissions.clone(),
         };
         if let Some(token) = self.cached_installation_token(&token_cache_key).await {
             debug!(
-                repo = %installation.repo,
+                github_app = %github_app.name,
+                repo = %repo,
                 "using cached GitHub installation access token"
             );
             return Ok(token);
         }
         debug!(
-            repo = %installation.repo,
+            github_app = %github_app.name,
+            repo = %repo,
             "cached GitHub installation access token not found or expired"
         );
         debug!(
-            repo = %installation.repo,
-            app_id = self.app_id,
+            github_app = %github_app.name,
+            repo = %repo,
+            app_id = github_app.app_id,
             "building GitHub App JWT"
         );
-        let jwt = build_github_app_jwt(self.app_id, private_key_pem)?;
-        debug!(repo = %installation.repo, "resolving GitHub App installation id");
+        let jwt = build_github_app_jwt(github_app.app_id, private_key_pem)?;
+        debug!(
+            github_app = %github_app.name,
+            repo = %repo,
+            "resolving GitHub App installation id"
+        );
         let installation_id = self
-            .cached_repository_installation_id(&jwt, &installation.repo)
+            .cached_repository_installation_id(&jwt, &github_app.name, repo)
             .await?;
         debug!(
-            repo = %installation.repo,
+            github_app = %github_app.name,
+            repo = %repo,
             installation_id,
             "resolved GitHub App installation id"
         );
@@ -133,7 +143,8 @@ impl GithubClient {
             permissions: optional_map(&installation.permissions),
         };
         debug!(
-            repo = %installation.repo,
+            github_app = %github_app.name,
+            repo = %repo,
             installation_id,
             permission_count = installation.permissions.len(),
             "sending GitHub installation access token request"
@@ -150,8 +161,8 @@ impl GithubClient {
             .await
             .with_context(|| {
                 format!(
-                    "failed to request installation access token for '{}'",
-                    installation.repo
+                    "failed to request installation access token for '{}' with github_app '{}'",
+                    repo, github_app.name
                 )
             })?;
 
@@ -159,20 +170,21 @@ impl GithubClient {
             .error_for_status()
             .with_context(|| {
                 format!(
-                    "GitHub installation access token request for '{}' returned an error status",
-                    installation.repo
+                    "GitHub installation access token request for '{}' with github_app '{}' returned an error status",
+                    repo, github_app.name
                 )
             })?
             .json()
             .await
             .with_context(|| {
                 format!(
-                    "failed to parse GitHub installation access token response for '{}'",
-                    installation.repo
+                    "failed to parse GitHub installation access token response for '{}' with github_app '{}'",
+                    repo, github_app.name
                 )
             })?;
         debug!(
-            repo = %installation.repo,
+            github_app = %github_app.name,
+            repo = %repo,
             installation_id,
             expires_at = %token.expires_at,
             repository_selection = ?token.repository_selection,
@@ -234,20 +246,43 @@ impl GithubClient {
     async fn cached_repository_installation_id(
         &self,
         jwt: &str,
+        github_app_name: &str,
         repo: &str,
     ) -> anyhow::Result<u64> {
-        if let Some(installation_id) = self.cache.lock().await.installation_ids.get(repo).copied() {
-            debug!(repo = %repo, installation_id, "using cached GitHub App installation id");
+        let cache_key = format!("{github_app_name}/{repo}");
+        if let Some(installation_id) = self
+            .cache
+            .lock()
+            .await
+            .installation_ids
+            .get(&cache_key)
+            .copied()
+        {
+            debug!(
+                github_app = %github_app_name,
+                repo = %repo,
+                installation_id,
+                "using cached GitHub App installation id"
+            );
             return Ok(installation_id);
         }
-        debug!(repo = %repo, "cached GitHub App installation id not found");
+        debug!(
+            github_app = %github_app_name,
+            repo = %repo,
+            "cached GitHub App installation id not found"
+        );
         let installation_id = self.repository_installation_id(jwt, repo).await?;
         self.cache
             .lock()
             .await
             .installation_ids
-            .insert(repo.to_string(), installation_id);
-        debug!(repo = %repo, installation_id, "cached GitHub App installation id");
+            .insert(cache_key, installation_id);
+        debug!(
+            github_app = %github_app_name,
+            repo = %repo,
+            installation_id,
+            "cached GitHub App installation id"
+        );
         Ok(installation_id)
     }
 
