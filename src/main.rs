@@ -6,6 +6,9 @@ mod config;
 mod error;
 mod github;
 mod jwt;
+#[cfg(feature = "kms")]
+#[allow(dead_code)]
+mod kms;
 mod kubernetes;
 mod secret;
 mod service;
