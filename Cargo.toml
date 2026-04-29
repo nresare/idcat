@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [features]
-default = []
+default = ["kms"]
 kms = ["dep:aws-config", "dep:aws-sdk-kms"]
 
 [dependencies]
