@@ -28,3 +28,8 @@ toml = "1.1"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[example]]
+name = "kms_sign_jwt"
+path = "examples/kms_sign_jwt.rs"
+required-features = ["kms"]

@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: The idcat contributors
 
 use crate::auth;
-use crate::config::{AuthenticationConfig, Config, GithubAppConfig, InstallationConfig};
+use crate::config::{AuthenticationConfig, Config, GithubAppConfig, InstallationConfig, KeySource};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
+use crate::signer::{LocalSigner, Signer};
 use jsonwebtoken::{Validation, decode};
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,16 +20,28 @@ pub struct AppState {
     pub installations: Arc<Vec<InstallationConfig>>,
     pub subject_validator: SubjectValidator,
     pub github: GithubClient,
+    pub key_source: KeySource,
     pub private_key_store: FilePrivateKeyStore,
+    #[cfg(feature = "kms")]
+    pub kms_signers: Option<crate::kms::KmsSignerFactory>,
 }
 
-pub fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Result<AppState> {
+pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Result<AppState> {
+    #[cfg(feature = "kms")]
+    let kms_signers = match config.key_source {
+        KeySource::Local => None,
+        KeySource::Kms => Some(crate::kms::KmsSignerFactory::from_env().await),
+    };
+
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
         installations: Arc::new(config.installations.clone()),
         subject_validator: SubjectValidator::new(config.authentication.clone(), disable_auth),
         github: GithubClient::new()?,
+        key_source: config.key_source,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
+        #[cfg(feature = "kms")]
+        kms_signers,
     })
 }
 
@@ -81,6 +94,31 @@ impl AppState {
             "installation authorization check passed"
         );
         Ok(installation)
+    }
+
+    pub fn signer(&self, secret_key: &str) -> anyhow::Result<Box<dyn Signer>> {
+        match self.key_source {
+            KeySource::Local => {
+                let private_key_pem = self.private_key_store.private_key_pem(secret_key)?;
+                Ok(Box::new(LocalSigner::from_rsa_pem(&private_key_pem)?))
+            }
+            KeySource::Kms => {
+                #[cfg(feature = "kms")]
+                {
+                    let kms_signers = self
+                        .kms_signers
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("AWS KMS signer factory not initialized"))?;
+                    Ok(Box::new(kms_signers.signer_for_secret_key(secret_key)))
+                }
+                #[cfg(not(feature = "kms"))]
+                {
+                    anyhow::bail!(
+                        "key_source 'kms' requires idcat to be built with the 'kms' feature"
+                    )
+                }
+            }
+        }
     }
 }
 
