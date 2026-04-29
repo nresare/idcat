@@ -12,6 +12,24 @@ use std::future::Future;
 use std::pin::Pin;
 
 #[derive(Clone, Debug)]
+pub struct KmsSignerFactory {
+    client: KmsClient,
+}
+
+impl KmsSignerFactory {
+    pub async fn from_env() -> Self {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        Self {
+            client: KmsClient::new(&config),
+        }
+    }
+
+    pub fn signer_for_secret_key(&self, secret_key: &str) -> KmsSigner {
+        KmsSigner::new(self.client.clone(), key_alias_for_secret_key(secret_key))
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct KmsSigner {
     client: KmsClient,
     key_id: String,
@@ -23,11 +41,6 @@ impl KmsSigner {
             client,
             key_id: key_id.into(),
         }
-    }
-
-    pub async fn from_env(key_id: impl Into<String>) -> Self {
-        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-        Self::new(KmsClient::new(&config), key_id)
     }
 }
 
@@ -53,5 +66,27 @@ impl Signer for KmsSigner {
 
             Ok(signature.as_ref().to_vec())
         })
+    }
+}
+
+fn key_alias_for_secret_key(secret_key: &str) -> String {
+    if secret_key.starts_with("alias/") {
+        secret_key.to_string()
+    } else {
+        format!("alias/{secret_key}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_alias_for_secret_key;
+
+    #[test]
+    fn builds_kms_alias_from_secret_key() {
+        assert_eq!(key_alias_for_secret_key("deployments"), "alias/deployments");
+        assert_eq!(
+            key_alias_for_secret_key("alias/deployments"),
+            "alias/deployments"
+        );
     }
 }

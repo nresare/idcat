@@ -10,6 +10,8 @@ use std::path::Path;
 pub struct Config {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
+    #[serde(default)]
+    pub key_source: KeySource,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
     #[serde(default)]
@@ -18,6 +20,14 @@ pub struct Config {
     pub github_apps: Vec<GithubAppConfig>,
     #[serde(rename = "installation", default)]
     pub installations: Vec<InstallationConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeySource {
+    #[default]
+    Local,
+    Kms,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -59,8 +69,11 @@ impl Config {
         if self.bind_address.is_empty() {
             anyhow::bail!("bind_address must not be empty");
         }
-        if self.private_key_directory.is_empty() {
+        if self.key_source == KeySource::Local && self.private_key_directory.is_empty() {
             anyhow::bail!("private_key_directory must not be empty");
+        }
+        if self.key_source == KeySource::Kms && !cfg!(feature = "kms") {
+            anyhow::bail!("key_source 'kms' requires idcat to be built with the 'kms' feature");
         }
         if !disable_auth {
             self.authentication.validate()?;
@@ -89,8 +102,9 @@ impl Config {
             if github_app.secret_key.is_empty() {
                 anyhow::bail!("github_app '{}' must define secret_key", github_app.name);
             }
-            if Path::new(&github_app.secret_key).is_absolute()
-                || github_app.secret_key.contains("..")
+            if self.key_source == KeySource::Local
+                && (Path::new(&github_app.secret_key).is_absolute()
+                    || github_app.secret_key.contains(".."))
             {
                 anyhow::bail!(
                     "github_app '{}' secret_key must be a relative file name",
@@ -157,7 +171,7 @@ fn default_authentication_algorithm() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, KeySource};
 
     #[test]
     fn parses_minimal_config() {
@@ -193,7 +207,55 @@ sub = "system:serviceaccount:idelephant:default"
 
         config.validate(false).unwrap();
         assert_eq!(config.bind_address, "0.0.0.0:8080");
+        assert_eq!(config.key_source, KeySource::Local);
         assert_eq!(config.private_key_directory, "/var/run/secrets/idcat");
+    }
+
+    #[test]
+    #[cfg(feature = "kms")]
+    fn accepts_kms_key_source_when_kms_feature_is_enabled() {
+        let config: Config = toml::from_str(
+            r#"
+key_source = "kms"
+
+[[github_app]]
+name = "default"
+app_id = 42
+secret_key = "default"
+
+[[installation]]
+github_app = "default"
+"#,
+        )
+        .unwrap();
+
+        config.validate(true).unwrap();
+        assert_eq!(config.key_source, KeySource::Kms);
+    }
+
+    #[test]
+    #[cfg(not(feature = "kms"))]
+    fn rejects_kms_key_source_when_kms_feature_is_disabled() {
+        let config: Config = toml::from_str(
+            r#"
+key_source = "kms"
+
+[[github_app]]
+name = "default"
+app_id = 42
+secret_key = "default"
+
+[[installation]]
+github_app = "default"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(true).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "key_source 'kms' requires idcat to be built with the 'kms' feature"
+        );
     }
 
     #[test]

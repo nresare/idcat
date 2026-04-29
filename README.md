@@ -8,6 +8,7 @@ It reads a GitHub App RSA private key from the filesystem, signs a short-lived G
 
 ```toml
 bind_address = "0.0.0.0:8080"
+key_source = "local"
 private_key_directory = "/var/run/secrets/idcat"
 
 [authentication]
@@ -50,6 +51,12 @@ kubectl create secret generic idcat \
 ```
 
 The application does not need Kubernetes API permissions to read private keys.
+
+When built with the `kms` feature, `key_source` may be set to `kms`. In that mode,
+`secret_key` selects an AWS KMS alias instead of a filesystem path. Values without
+the `alias/` prefix are treated as alias names, so `secret_key = "deployments"`
+uses `alias/deployments`. AWS credentials and region are loaded from the ambient
+AWS SDK configuration.
 
 ## API
 
