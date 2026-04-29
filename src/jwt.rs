@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
+use crate::signer::Signer;
 use anyhow::Context;
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use jsonwebtoken::{Algorithm, Header};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,13 +18,16 @@ struct GithubAppClaims {
     iss: String,
 }
 
-pub fn build_github_app_jwt(github_app_id: u64, private_key_pem: &str) -> anyhow::Result<String> {
-    build_github_app_jwt_at(github_app_id, private_key_pem, now()?)
+pub async fn build_github_app_jwt(
+    github_app_id: u64,
+    signer: &dyn Signer,
+) -> anyhow::Result<String> {
+    build_github_app_jwt_at(github_app_id, signer, now()?).await
 }
 
-fn build_github_app_jwt_at(
+async fn build_github_app_jwt_at(
     github_app_id: u64,
-    private_key_pem: &str,
+    signer: &dyn Signer,
     now: u64,
 ) -> anyhow::Result<String> {
     let issued_at = now.saturating_sub(CLOCK_SKEW_SECONDS);
@@ -32,10 +37,23 @@ fn build_github_app_jwt_at(
         iss: github_app_id.to_string(),
     };
     let header = Header::new(Algorithm::RS256);
-    let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-        .context("failed to parse GitHub App RSA private key")?;
-    encode(&header, &claims, &encoding_key)
-        .map_err(|error| anyhow::anyhow!("failed to encode GitHub App JWT: {error}"))
+    let encoded_header =
+        encode_jwt_part(&header).context("failed to encode GitHub App JWT header")?;
+    let encoded_claims =
+        encode_jwt_part(&claims).context("failed to encode GitHub App JWT claims")?;
+    let signing_input = format!("{encoded_header}.{encoded_claims}");
+    let signature = signer
+        .sign(signing_input.as_bytes())
+        .await
+        .context("failed to sign GitHub App JWT")?;
+    let encoded_signature = URL_SAFE_NO_PAD.encode(signature);
+
+    Ok(format!("{signing_input}.{encoded_signature}"))
+}
+
+fn encode_jwt_part<T: Serialize>(input: &T) -> anyhow::Result<String> {
+    let json = serde_json::to_vec(input)?;
+    Ok(URL_SAFE_NO_PAD.encode(json))
 }
 
 fn now() -> anyhow::Result<u64> {
@@ -48,8 +66,12 @@ fn now() -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::build_github_app_jwt_at;
+    use crate::signer::{LocalSigner, Signer};
     use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
     use serde_json::Value;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
 
     const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDhTPJsY5BW6Omc
@@ -90,9 +112,12 @@ Oi+Heacju3p8gSVsPM/5RpFTSTUIta92YLP1n/QH5c2nMqY19pRmz5FnIJJMhZpR
 iQIDAQAB
 -----END PUBLIC KEY-----"#;
 
-    #[test]
-    fn builds_rs256_github_app_jwt() {
-        let token = build_github_app_jwt_at(42, PRIVATE_KEY, 4_102_444_800).unwrap();
+    #[tokio::test]
+    async fn builds_rs256_github_app_jwt() {
+        let signer = LocalSigner::from_rsa_pem(PRIVATE_KEY).unwrap();
+        let token = build_github_app_jwt_at(42, &signer, 4_102_444_800)
+            .await
+            .unwrap();
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&["42"]);
         validation.validate_exp = false;
@@ -108,5 +133,51 @@ iQIDAQAB
         assert_eq!(decoded.claims["iss"], "42");
         assert_eq!(decoded.claims["iat"], 4_102_444_740_u64);
         assert_eq!(decoded.claims["exp"], 4_102_445_280_u64);
+    }
+
+    #[tokio::test]
+    async fn delegates_signature_to_signer() {
+        let signer = RecordingSigner::new(vec![1, 2, 3]);
+        let token = build_github_app_jwt_at(42, &signer, 4_102_444_800)
+            .await
+            .unwrap();
+        let parts = token.split('.').collect::<Vec<_>>();
+
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[2], "AQID");
+        assert_eq!(
+            signer.messages(),
+            vec![format!("{}.{}", parts[0], parts[1]).into_bytes()]
+        );
+    }
+
+    struct RecordingSigner {
+        signature: Vec<u8>,
+        messages: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl RecordingSigner {
+        fn new(signature: Vec<u8>) -> Self {
+            Self {
+                signature,
+                messages: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn messages(&self) -> Vec<Vec<u8>> {
+            self.messages.lock().unwrap().clone()
+        }
+    }
+
+    impl Signer for RecordingSigner {
+        fn sign<'a>(
+            &'a self,
+            message: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async move {
+                self.messages.lock().unwrap().push(message.to_vec());
+                Ok(self.signature.clone())
+            })
+        }
     }
 }

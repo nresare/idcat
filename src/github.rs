@@ -3,6 +3,7 @@
 
 use crate::config::{GithubAppConfig, InstallationConfig};
 use crate::jwt::build_github_app_jwt;
+use crate::signer::Signer;
 use anyhow::Context;
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HOST, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
@@ -95,7 +96,7 @@ impl GithubClient {
     pub async fn create_installation_token(
         &self,
         github_app: &GithubAppConfig,
-        private_key_pem: &str,
+        signer: &dyn Signer,
         repo: &str,
         installation: &InstallationConfig,
     ) -> anyhow::Result<InstallationTokenResponse> {
@@ -123,7 +124,7 @@ impl GithubClient {
             app_id = github_app.app_id,
             "building GitHub App JWT"
         );
-        let jwt = build_github_app_jwt(github_app.app_id, private_key_pem)?;
+        let jwt = build_github_app_jwt(github_app.app_id, signer).await?;
         debug!(
             github_app = %github_app.name,
             repo = %repo,
