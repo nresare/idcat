@@ -9,11 +9,13 @@ mod jwt;
 mod kubernetes;
 mod secret;
 mod service;
+mod signer;
 
 use crate::config::Config;
 use crate::error::AppError;
 use crate::github::InstallationTokenResponse;
 use crate::service::{AppState, build_app_state};
+use crate::signer::LocalSigner;
 use axum::body::{Body, Bytes};
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderName, Method, Uri, header};
@@ -285,10 +287,11 @@ async fn create_installation_token_for_repo(
     let private_key_pem = state
         .private_key_store
         .private_key_pem(&github_app.secret_key)?;
+    let signer = LocalSigner::from_rsa_pem(&private_key_pem)?;
     debug!(github_app = %github_app_name, repo = %repo, "requesting GitHub installation access token");
     let token = state
         .github
-        .create_installation_token(github_app, &private_key_pem, repo, installation)
+        .create_installation_token(github_app, &signer, repo, installation)
         .await?;
     debug!(github_app = %github_app_name, repo = %repo, expires_at = %token.expires_at, "GitHub installation access token created");
     Ok(token)
