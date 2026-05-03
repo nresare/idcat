@@ -7,43 +7,29 @@ It reads a GitHub App RSA private key from the filesystem, signs a short-lived G
 ## Configuration
 
 ```toml
-bind_address = "0.0.0.0:8080"
-key_source = "local"
-private_key_directory = "/var/run/secrets/idcat"
+private-key-directory = "/var/run/secrets/idcat"
 
-[authentication]
+[[identity-provider]]
+name = "kubernetes"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 
-[[github_app]]
+[[github-app]]
 name = "deployments"
-app_id = 123456
-secret_key = "deployments-private-key.pem"
-
-[[github_app]]
-name = "release-bot"
-app_id = 234567
-secret_key = "release-bot-private-key.pem"
+app-id = 123456
+secret-key = "deployments-private-key.pem"
 
 [[installation]]
-github_app = "deployments"
+github-app = "deployments"
+identity-provider = "kubernetes"
 
-[installation.required_claims]
-organization_slug = "my-buildkite-org"
-pipeline_slug = "deploy-idcat"
-
-[[installation]]
-github_app = "release-bot"
-
-[installation.permissions]
-contents = "read"
-metadata = "read"
-
-[installation.required_claims]
+[installation.required-claims]
 sub = "system:serviceaccount:default:default"
 ```
 
-Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private_key_directory`, but `idcat` only reads files from the filesystem.
+See `idcat.toml.example` for a fuller configuration with multiple identity providers and GitHub Apps.
+
+Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private-key-directory`, but `idcat` only reads files from the filesystem.
 
 ```sh
 kubectl create secret generic idcat \
@@ -52,9 +38,9 @@ kubectl create secret generic idcat \
 
 The application does not need Kubernetes API permissions to read private keys.
 
-When built with the `kms` feature, `key_source` may be set to `kms`. In that mode,
-`secret_key` selects an AWS KMS alias instead of a filesystem path. Values without
-the `alias/` prefix are treated as alias names, so `secret_key = "deployments"`
+When built with the `kms` feature, `key-source` may be set to `kms`. In that mode,
+`secret-key` selects an AWS KMS alias instead of a filesystem path. Values without
+the `alias/` prefix are treated as alias names, so `secret-key = "deployments"`
 uses `alias/deployments`. AWS credentials and region are loaded from the ambient
 AWS SDK configuration.
 
@@ -73,7 +59,7 @@ ghs_...
 ```
 
 To proxy a repository-scoped GitHub API request through an installation token, prefix the GitHub
-`/repos/{owner}/{repo}` path with `/proxy/{github_app}`. The GitHub app name selects the
+`/repos/{owner}/{repo}` path with `/proxy/{github-app}`. The GitHub app name selects the
 configured GitHub App and authorization policy, while the owner/repo pair comes from the proxied
 GitHub API path:
 
@@ -89,7 +75,7 @@ curl -X GET \
 cargo run -- --config-file idcat.toml
 ```
 
-For local testing, authentication and `required_claims` checks can be bypassed:
+For local testing, authentication and `required-claims` checks can be bypassed:
 
 ```sh
 cargo run -- --config-file idcat.toml --disable-auth
@@ -102,7 +88,7 @@ cargo run -- --config-file idcat.toml --debug
 ```
 
 GitHub App installation IDs are cached in memory after the first lookup. Installation tokens are
-cached in memory for 50 minutes per GitHub app, repo, and permission set.
+cached in memory for 50 minutes per GitHub app and repo.
 
 ## License
 

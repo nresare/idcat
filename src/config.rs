@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Config {
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
@@ -14,24 +15,26 @@ pub struct Config {
     pub key_source: KeySource,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
-    #[serde(default)]
-    pub authentication: AuthenticationConfig,
-    #[serde(rename = "github_app", default)]
+    #[serde(rename = "identity-provider", default)]
+    pub identity_providers: Vec<IdentityProviderConfig>,
+    #[serde(rename = "github-app", default)]
     pub github_apps: Vec<GithubAppConfig>,
     #[serde(rename = "installation", default)]
     pub installations: Vec<InstallationConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum KeySource {
     #[default]
     Local,
     Kms,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct AuthenticationConfig {
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct IdentityProviderConfig {
+    pub name: String,
     #[serde(default)]
     pub audience: String,
     #[serde(default)]
@@ -42,6 +45,7 @@ pub struct AuthenticationConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct GithubAppConfig {
     pub name: String,
     pub app_id: u64,
@@ -49,12 +53,13 @@ pub struct GithubAppConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct InstallationConfig {
     pub github_app: String,
+    #[serde(rename = "identity-provider")]
+    pub identity_provider: Option<String>,
     #[serde(default)]
     pub required_claims: BTreeMap<String, String>,
-    #[serde(default)]
-    pub permissions: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -67,75 +72,104 @@ impl Config {
 
     pub fn validate(&self, disable_auth: bool) -> anyhow::Result<()> {
         if self.bind_address.is_empty() {
-            anyhow::bail!("bind_address must not be empty");
+            anyhow::bail!("bind-address must not be empty");
         }
         if self.key_source == KeySource::Local && self.private_key_directory.is_empty() {
-            anyhow::bail!("private_key_directory must not be empty");
+            anyhow::bail!("private-key-directory must not be empty");
         }
         if self.key_source == KeySource::Kms && !cfg!(feature = "kms") {
-            anyhow::bail!("key_source 'kms' requires idcat to be built with the 'kms' feature");
-        }
-        if !disable_auth {
-            self.authentication.validate()?;
+            anyhow::bail!("key-source 'kms' requires idcat to be built with the 'kms' feature");
         }
         if self.installations.is_empty() {
             anyhow::bail!("at least one [[installation]] entry is required");
         }
+        let mut identity_providers = std::collections::HashSet::new();
+        if !disable_auth && self.identity_providers.is_empty() {
+            anyhow::bail!("at least one [[identity-provider]] entry is required");
+        }
+        for identity_provider in &self.identity_providers {
+            identity_provider.validate()?;
+            if !identity_providers.insert(identity_provider.name.clone()) {
+                anyhow::bail!("duplicate identity-provider '{}'", identity_provider.name);
+            }
+        }
 
         if self.github_apps.is_empty() {
-            anyhow::bail!("at least one [[github_app]] entry is required");
+            anyhow::bail!("at least one [[github-app]] entry is required");
         }
         let mut github_apps = std::collections::HashSet::new();
         for github_app in &self.github_apps {
             if github_app.name.is_empty() {
-                anyhow::bail!("github_app names must not be empty");
+                anyhow::bail!("github-app names must not be empty");
             }
             if github_app.name.contains('/') {
-                anyhow::bail!("github_app '{}' name must not contain '/'", github_app.name);
+                anyhow::bail!("github-app '{}' name must not contain '/'", github_app.name);
             }
             if github_app.app_id == 0 {
                 anyhow::bail!(
-                    "github_app '{}' app_id must be greater than 0",
+                    "github-app '{}' app-id must be greater than 0",
                     github_app.name
                 );
             }
             if github_app.secret_key.is_empty() {
-                anyhow::bail!("github_app '{}' must define secret_key", github_app.name);
+                anyhow::bail!("github-app '{}' must define secret-key", github_app.name);
             }
             if self.key_source == KeySource::Local
                 && (Path::new(&github_app.secret_key).is_absolute()
                     || github_app.secret_key.contains(".."))
             {
                 anyhow::bail!(
-                    "github_app '{}' secret_key must be a relative file name",
+                    "github-app '{}' secret-key must be a relative file name",
                     github_app.name
                 );
             }
             if !github_apps.insert(github_app.name.clone()) {
-                anyhow::bail!("duplicate github_app '{}'", github_app.name);
+                anyhow::bail!("duplicate github-app '{}'", github_app.name);
             }
         }
 
         let mut installations = std::collections::HashSet::new();
         for installation in &self.installations {
             if installation.github_app.is_empty() {
-                anyhow::bail!("installation entries must define github_app");
+                anyhow::bail!("installation entries must define github-app");
             }
             if !github_apps.contains(&installation.github_app) {
                 anyhow::bail!(
-                    "installation references unknown github_app '{}'",
+                    "installation references unknown github-app '{}'",
                     installation.github_app
                 );
             }
+            if !disable_auth {
+                let identity_provider =
+                    installation.identity_provider.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "installation for github-app '{}' must define identity-provider",
+                            installation.github_app
+                        )
+                    })?;
+                if identity_provider.is_empty() {
+                    anyhow::bail!(
+                        "installation for github-app '{}' identity-provider must not be empty",
+                        installation.github_app
+                    );
+                }
+                if !identity_providers.contains(identity_provider) {
+                    anyhow::bail!(
+                        "installation for github-app '{}' references unknown identity-provider '{}'",
+                        installation.github_app,
+                        identity_provider
+                    );
+                }
+            }
             if !disable_auth && installation.required_claims.is_empty() {
                 anyhow::bail!(
-                    "installation for github_app '{}' must define at least one required_claim",
+                    "installation for github-app '{}' must define at least one required-claim",
                     installation.github_app
                 );
             }
             if !installations.insert(installation.github_app.clone()) {
                 anyhow::bail!(
-                    "duplicate installation for github_app '{}'",
+                    "duplicate installation for github-app '{}'",
                     installation.github_app
                 );
             }
@@ -144,13 +178,19 @@ impl Config {
     }
 }
 
-impl AuthenticationConfig {
+impl IdentityProviderConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
+        if self.name.is_empty() {
+            anyhow::bail!("identity-provider names must not be empty");
+        }
         if self.audience.is_empty() {
-            anyhow::bail!("authentication.audience must not be empty");
+            anyhow::bail!(
+                "identity-provider '{}' audience must not be empty",
+                self.name
+            );
         }
         if self.issuer.is_empty() {
-            anyhow::bail!("authentication.issuer must not be empty");
+            anyhow::bail!("identity-provider '{}' issuer must not be empty", self.name);
         }
         crate::auth::algorithm(self)?;
         Ok(())
@@ -177,15 +217,16 @@ mod tests {
     fn parses_minimal_config() {
         let config: Config = toml::from_str(
             r#"
-[[github_app]]
+[[github-app]]
 name = "default"
-app_id = 42
-secret_key = "private-key.pem"
+app-id = 42
+secret-key = "private-key.pem"
 
-[authentication]
+[[identity-provider]]
+name = "kubernetes"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
-validation_key = """
+validation-key = """
 -----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwFi8U2NAcihFpXAvLmOz
 K1GfRjFzTuGWVDEBjjyEjSiDeBFZEl+gq3TnDFw9+TQPPbjLbFou5HIZ11PoT+sp
@@ -197,9 +238,10 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 """
 
 [[installation]]
-github_app = "default"
+github-app = "default"
+identity-provider = "kubernetes"
 
-[installation.required_claims]
+[installation.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 "#,
         )
@@ -216,15 +258,15 @@ sub = "system:serviceaccount:idelephant:default"
     fn accepts_kms_key_source_when_kms_feature_is_enabled() {
         let config: Config = toml::from_str(
             r#"
-key_source = "kms"
+key-source = "kms"
 
-[[github_app]]
+[[github-app]]
 name = "default"
-app_id = 42
-secret_key = "default"
+app-id = 42
+secret-key = "default"
 
 [[installation]]
-github_app = "default"
+github-app = "default"
 "#,
         )
         .unwrap();
@@ -238,15 +280,15 @@ github_app = "default"
     fn rejects_kms_key_source_when_kms_feature_is_disabled() {
         let config: Config = toml::from_str(
             r#"
-key_source = "kms"
+key-source = "kms"
 
-[[github_app]]
+[[github-app]]
 name = "default"
-app_id = 42
-secret_key = "default"
+app-id = 42
+secret-key = "default"
 
 [[installation]]
-github_app = "default"
+github-app = "default"
 "#,
         )
         .unwrap();
@@ -254,7 +296,7 @@ github_app = "default"
         let error = config.validate(true).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "key_source 'kms' requires idcat to be built with the 'kms' feature"
+            "key-source 'kms' requires idcat to be built with the 'kms' feature"
         );
     }
 
@@ -262,15 +304,16 @@ github_app = "default"
     fn rejects_duplicate_installations_for_github_app() {
         let config: Config = toml::from_str(
             r#"
-[[github_app]]
+[[github-app]]
 name = "default"
-app_id = 42
-secret_key = "private-key.pem"
+app-id = 42
+secret-key = "private-key.pem"
 
-[authentication]
+[[identity-provider]]
+name = "kubernetes"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
-validation_key = """
+validation-key = """
 -----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwFi8U2NAcihFpXAvLmOz
 K1GfRjFzTuGWVDEBjjyEjSiDeBFZEl+gq3TnDFw9+TQPPbjLbFou5HIZ11PoT+sp
@@ -282,15 +325,17 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 """
 
 [[installation]]
-github_app = "default"
+github-app = "default"
+identity-provider = "kubernetes"
 
-[installation.required_claims]
+[installation.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 
 [[installation]]
-github_app = "default"
+github-app = "default"
+identity-provider = "kubernetes"
 
-[installation.required_claims]
+[installation.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 "#,
         )
@@ -299,7 +344,38 @@ sub = "system:serviceaccount:idelephant:default"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "duplicate installation for github_app 'default'"
+            "duplicate installation for github-app 'default'"
+        );
+    }
+
+    #[test]
+    fn rejects_installation_with_unknown_identity_provider() {
+        let config: Config = toml::from_str(
+            r#"
+[[identity-provider]]
+name = "kubernetes"
+audience = "idcat"
+issuer = "https://kubernetes.default.svc"
+
+[[github-app]]
+name = "default"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation]]
+github-app = "default"
+identity-provider = "buildkite"
+
+[installation.required-claims]
+sub = "system:serviceaccount:idelephant:default"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "installation for github-app 'default' references unknown identity-provider 'buildkite'"
         );
     }
 
@@ -307,13 +383,13 @@ sub = "system:serviceaccount:idelephant:default"
     fn disable_auth_skips_authentication_and_required_claims_validation() {
         let config: Config = toml::from_str(
             r#"
-[[github_app]]
+[[github-app]]
 name = "default"
-app_id = 42
-secret_key = "private-key.pem"
+app-id = 42
+secret-key = "private-key.pem"
 
 [[installation]]
-github_app = "default"
+github-app = "default"
 "#,
         )
         .unwrap();

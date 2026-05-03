@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-use crate::config::AuthenticationConfig;
+use crate::config::IdentityProviderConfig;
 use crate::kubernetes;
 use anyhow::Context;
 use jsonwebtoken::jwk::{Jwk, JwkSet, KeyAlgorithm, PublicKeyUse};
@@ -10,7 +10,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use tracing::{debug, info};
 
-pub fn algorithm(authentication: &AuthenticationConfig) -> anyhow::Result<Algorithm> {
+pub fn algorithm(authentication: &IdentityProviderConfig) -> anyhow::Result<Algorithm> {
     match authentication.algorithm.as_str() {
         "RS256" => Ok(Algorithm::RS256),
         "RS384" => Ok(Algorithm::RS384),
@@ -23,9 +23,9 @@ pub fn algorithm(authentication: &AuthenticationConfig) -> anyhow::Result<Algori
     }
 }
 
-pub fn decoding_key(authentication: &AuthenticationConfig) -> anyhow::Result<DecodingKey> {
+pub fn decoding_key(authentication: &IdentityProviderConfig) -> anyhow::Result<DecodingKey> {
     let validation_key = authentication.validation_key.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("authentication.validation_key is required to validate source tokens")
+        anyhow::anyhow!("identity-provider.validation-key is required to validate source tokens")
     })?;
     match algorithm(authentication)? {
         Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
@@ -39,7 +39,7 @@ pub fn decoding_key(authentication: &AuthenticationConfig) -> anyhow::Result<Dec
 }
 
 pub fn resolving_decoding_key(
-    authentication: &AuthenticationConfig,
+    authentication: &IdentityProviderConfig,
     bearer_token: &str,
 ) -> anyhow::Result<DecodingKey> {
     match authentication.validation_key {
@@ -47,7 +47,7 @@ pub fn resolving_decoding_key(
         None => {
             info!(
                 issuer = %authentication.issuer,
-                "authentication.validation_key not configured; attempting issuer-based validation key discovery"
+                "identity-provider.validation-key not configured; attempting issuer-based validation key discovery"
             );
             discovery_decoding_key(authentication, bearer_token)
         }
@@ -55,7 +55,7 @@ pub fn resolving_decoding_key(
 }
 
 fn discovery_decoding_key(
-    authentication: &AuthenticationConfig,
+    authentication: &IdentityProviderConfig,
     bearer_token: &str,
 ) -> anyhow::Result<DecodingKey> {
     let openid_configuration_url = format!(
@@ -116,7 +116,7 @@ fn discovery_decoding_key(
     })
 }
 
-fn discovery_client(authentication: &AuthenticationConfig) -> anyhow::Result<Client> {
+fn discovery_client(authentication: &IdentityProviderConfig) -> anyhow::Result<Client> {
     let mut builder = Client::builder();
 
     if authentication.issuer == kubernetes::KUBERNETES_SERVICE_HOST {

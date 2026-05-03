@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: The idcat contributors
 
 use crate::auth;
-use crate::config::{AuthenticationConfig, Config, GithubAppConfig, InstallationConfig, KeySource};
+use crate::config::{
+    Config, GithubAppConfig, IdentityProviderConfig, InstallationConfig, KeySource,
+};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
@@ -36,7 +38,7 @@ pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Res
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
         installations: Arc::new(config.installations.clone()),
-        subject_validator: SubjectValidator::new(config.authentication.clone(), disable_auth),
+        subject_validator: SubjectValidator::new(config.identity_providers.clone(), disable_auth),
         github: GithubClient::new()?,
         key_source: config.key_source,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
@@ -58,25 +60,30 @@ impl AppState {
         &self,
         github_app_name: &str,
         repo: &str,
-        claims: &SourceClaims,
     ) -> Result<&InstallationConfig, AppError> {
-        let subject = claims.subject();
         debug!(
             github_app = %github_app_name,
             repo = %repo,
-            subject = %subject,
             "searching configured installations"
         );
-        let installation = self
-            .installations
+        self.installations
             .iter()
             .find(|installation| installation.github_app == github_app_name)
             .ok_or_else(|| {
                 AppError::NotFound(format!(
                     "unknown installation for github_app '{github_app_name}'"
                 ))
-            })?;
+            })
+    }
 
+    pub fn authorize_installation(
+        &self,
+        github_app_name: &str,
+        repo: &str,
+        installation: &InstallationConfig,
+        claims: &SourceClaims,
+    ) -> Result<(), AppError> {
+        let subject = claims.subject();
         if self.subject_validator.auth_enabled()
             && let Some((claim_name, required_value)) =
                 claims.first_missing_required_claim(&installation.required_claims)
@@ -93,7 +100,7 @@ impl AppState {
             auth_enabled = self.subject_validator.auth_enabled(),
             "installation authorization check passed"
         );
-        Ok(installation)
+        Ok(())
     }
 
     pub fn signer(&self, secret_key: &str) -> anyhow::Result<Box<dyn Signer>> {
@@ -130,7 +137,7 @@ pub struct SubjectValidator {
 #[derive(Clone)]
 enum SubjectValidationMode {
     Disabled,
-    Enabled(AuthenticationConfig),
+    Enabled(BTreeMap<String, IdentityProviderConfig>),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,22 +180,41 @@ impl SourceClaims {
 }
 
 impl SubjectValidator {
-    pub fn new(authentication: AuthenticationConfig, disable_auth: bool) -> Self {
+    pub fn new(identity_providers: Vec<IdentityProviderConfig>, disable_auth: bool) -> Self {
         let mode = if disable_auth {
             SubjectValidationMode::Disabled
         } else {
-            SubjectValidationMode::Enabled(authentication)
+            let identity_providers = identity_providers
+                .into_iter()
+                .map(|identity_provider| (identity_provider.name.clone(), identity_provider))
+                .collect();
+            SubjectValidationMode::Enabled(identity_providers)
         };
         Self { mode }
     }
 
-    pub fn validate(&self, bearer_token: Option<&str>) -> Result<SourceClaims, AppError> {
+    pub fn validate(
+        &self,
+        identity_provider: Option<&str>,
+        bearer_token: Option<&str>,
+    ) -> Result<SourceClaims, AppError> {
         let authentication = match &self.mode {
             SubjectValidationMode::Disabled => {
                 debug!("source token claim validation skipped because auth is disabled");
                 return Ok(SourceClaims::unauthenticated());
             }
-            SubjectValidationMode::Enabled(authentication) => authentication,
+            SubjectValidationMode::Enabled(identity_providers) => {
+                let identity_provider = identity_provider.ok_or_else(|| {
+                    AppError::Internal(
+                        "installation is missing an identity-provider reference".to_string(),
+                    )
+                })?;
+                identity_providers.get(identity_provider).ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "installation references unknown identity-provider '{identity_provider}'"
+                    ))
+                })?
+            }
         };
         let bearer_token = bearer_token
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;

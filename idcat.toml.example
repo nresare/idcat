@@ -1,34 +1,38 @@
-bind_address = "0.0.0.0:8080"
-key_source = "local"
-private_key_directory = "/var/run/secrets/idcat"
+bind-address = "0.0.0.0:8080"
+key-source = "local"
+private-key-directory = "/var/run/secrets/idcat"
 
-[authentication]
+[[identity-provider]]
+name = "kubernetes"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 
-[[github_app]]
-name = "deployments"
-app_id = 123456
-secret_key = "deployments-private-key.pem"
+[[identity-provider]]
+name = "buildkite"
+audience = "idcat"
+issuer = "https://agent.buildkite.com"
 
-[[github_app]]
+[[github-app]]
+name = "deployments"
+app-id = 123456
+secret-key = "deployments-private-key.pem"
+
+[[github-app]]
 name = "release-bot"
-app_id = 234567
-secret_key = "release-bot-private-key.pem"
+app-id = 234567
+secret-key = "release-bot-private-key.pem"
 
 [[installation]]
-github_app = "deployments"
+github-app = "deployments"
+identity-provider = "buildkite"
 
-[installation.required_claims]
+[installation.required-claims]
 organization_slug = "my-buildkite-org"
 pipeline_slug = "deploy-idcat"
 
 [[installation]]
-github_app = "release-bot"
+github-app = "release-bot"
+identity-provider = "kubernetes"
 
-[installation.permissions]
-contents = "read"
-metadata = "read"
-
-[installation.required_claims]
+[installation.required-claims]
 sub = "system:serviceaccount:default:default"
