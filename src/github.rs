@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-use crate::config::{GithubAppConfig, InstallationConfig};
+use crate::config::GithubAppConfig;
 use crate::jwt::build_github_app_jwt;
 use crate::signer::Signer;
 use anyhow::Context;
@@ -38,7 +38,6 @@ struct GithubCache {
 struct InstallationTokenCacheKey {
     github_app: String,
     repo: String,
-    permissions: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -51,8 +50,6 @@ struct CachedInstallationToken {
 struct CreateInstallationTokenRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     repository_ids: Option<&'a [u64]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    permissions: Option<&'a BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,12 +95,10 @@ impl GithubClient {
         github_app: &GithubAppConfig,
         signer: &dyn Signer,
         repo: &str,
-        installation: &InstallationConfig,
     ) -> anyhow::Result<InstallationTokenResponse> {
         let token_cache_key = InstallationTokenCacheKey {
             github_app: github_app.name.clone(),
             repo: repo.to_string(),
-            permissions: installation.permissions.clone(),
         };
         if let Some(token) = self.cached_installation_token(&token_cache_key).await {
             debug!(
@@ -141,13 +136,11 @@ impl GithubClient {
         );
         let request = CreateInstallationTokenRequest {
             repository_ids: None,
-            permissions: optional_map(&installation.permissions),
         };
         debug!(
             github_app = %github_app.name,
             repo = %repo,
             installation_id,
-            permission_count = installation.permissions.len(),
             "sending GitHub installation access token request"
         );
         let response = self
@@ -322,14 +315,6 @@ impl GithubClient {
             Some(query) if !query.is_empty() => format!("{}/{path}?{query}", self.api_url),
             _ => format!("{}/{path}", self.api_url),
         }
-    }
-}
-
-fn optional_map(values: &BTreeMap<String, String>) -> Option<&BTreeMap<String, String>> {
-    if values.is_empty() {
-        None
-    } else {
-        Some(values)
     }
 }
 

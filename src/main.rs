@@ -269,20 +269,28 @@ async fn create_installation_token_for_repo(
         }
         Err(error) => return Err(error),
     };
-    debug!(github_app = %github_app_name, repo = %repo, "validating source token claims");
-    let source_claims = state.subject_validator.validate(bearer_token.as_deref())?;
+    debug!(github_app = %github_app_name, repo = %repo, "selecting GitHub App config");
+    let github_app = state.github_app(github_app_name)?;
+    debug!(github_app = %github_app_name, repo = %repo, "selecting installation config");
+    let installation = state.installation(github_app_name, repo)?;
+    debug!(
+        github_app = %github_app_name,
+        repo = %repo,
+        identity_provider = ?installation.identity_provider,
+        "validating source token claims"
+    );
+    let source_claims = state.subject_validator.validate(
+        installation.identity_provider.as_deref(),
+        bearer_token.as_deref(),
+    )?;
     let source_subject = source_claims.subject();
     debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
-    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "selecting GitHub App config");
-    let github_app = state.github_app(github_app_name)?;
-    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "selecting installation config");
-    let installation = state.installation(github_app_name, repo, &source_claims)?;
+    state.authorize_installation(github_app_name, repo, installation, &source_claims)?;
     debug!(
         github_app = %github_app_name,
         repo = %repo,
         subject = %source_subject,
         secret_key = %github_app.secret_key,
-        permission_count = installation.permissions.len(),
         "installation config selected"
     );
     debug!(github_app = %github_app_name, repo = %repo, secret_key = %github_app.secret_key, key_source = ?state.key_source, "preparing GitHub App signer");
@@ -290,7 +298,7 @@ async fn create_installation_token_for_repo(
     debug!(github_app = %github_app_name, repo = %repo, "requesting GitHub installation access token");
     let token = state
         .github
-        .create_installation_token(github_app, signer.as_ref(), repo, installation)
+        .create_installation_token(github_app, signer.as_ref(), repo)
         .await?;
     debug!(github_app = %github_app_name, repo = %repo, expires_at = %token.expires_at, "GitHub installation access token created");
     Ok(token)
