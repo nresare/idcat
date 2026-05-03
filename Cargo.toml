@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[workspace]
+members = [
+    "git-credential-helper",
+]
+resolver = "3"
+
 [features]
 default = ["kms"]
 kms = ["dep:aws-config", "dep:aws-sdk-kms"]

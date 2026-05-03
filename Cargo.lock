@@ -1107,6 +1107,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-credential-helper-idcat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "reqwest",
+ "serde",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
