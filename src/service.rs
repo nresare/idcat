@@ -3,7 +3,7 @@
 
 use crate::auth;
 use crate::config::{
-    Config, GithubAppConfig, IdentityProviderConfig, InstallationConfig, KeySource,
+    AccessPolicyConfig, Config, GithubAppConfig, IdentityProviderConfig, KeySource,
 };
 use crate::error::AppError;
 use crate::github::GithubClient;
@@ -19,7 +19,7 @@ use tracing::debug;
 #[derive(Clone)]
 pub struct AppState {
     pub github_apps: Arc<Vec<GithubAppConfig>>,
-    pub installations: Arc<Vec<InstallationConfig>>,
+    pub access_policies: Arc<Vec<AccessPolicyConfig>>,
     pub subject_validator: SubjectValidator,
     pub github: GithubClient,
     pub key_source: KeySource,
@@ -37,7 +37,7 @@ pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Res
 
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
-        installations: Arc::new(config.installations.clone()),
+        access_policies: Arc::new(config.access_policies.clone()),
         subject_validator: SubjectValidator::new(config.identity_providers.clone(), disable_auth),
         github: GithubClient::new()?,
         key_source: config.key_source,
@@ -56,37 +56,37 @@ impl AppState {
             .ok_or_else(|| AppError::NotFound(format!("unknown github_app '{github_app_name}'")))
     }
 
-    pub fn installation(
+    pub fn access_policy(
         &self,
         github_app_name: &str,
         repo: &str,
-    ) -> Result<&InstallationConfig, AppError> {
+    ) -> Result<&AccessPolicyConfig, AppError> {
         debug!(
             github_app = %github_app_name,
             repo = %repo,
-            "searching configured installations"
+            "searching configured access policies"
         );
-        self.installations
+        self.access_policies
             .iter()
-            .find(|installation| installation.github_app == github_app_name)
+            .find(|access_policy| access_policy.github_app == github_app_name)
             .ok_or_else(|| {
                 AppError::NotFound(format!(
-                    "unknown installation for github_app '{github_app_name}'"
+                    "unknown access-policy for github_app '{github_app_name}'"
                 ))
             })
     }
 
-    pub fn authorize_installation(
+    pub fn authorize_access_policy(
         &self,
         github_app_name: &str,
         repo: &str,
-        installation: &InstallationConfig,
+        access_policy: &AccessPolicyConfig,
         claims: &SourceClaims,
     ) -> Result<(), AppError> {
         let subject = claims.subject();
         if self.subject_validator.auth_enabled()
             && let Some((claim_name, required_value)) =
-                claims.first_missing_required_claim(&installation.required_claims)
+                claims.first_missing_required_claim(&access_policy.required_claims)
         {
             return Err(AppError::Unauthorized(format!(
                 "claim '{claim_name}' must equal '{required_value}' to use repo '{repo}' with github_app '{github_app_name}'"
@@ -98,7 +98,7 @@ impl AppState {
             repo = %repo,
             subject = %subject,
             auth_enabled = self.subject_validator.auth_enabled(),
-            "installation authorization check passed"
+            "access policy authorization check passed"
         );
         Ok(())
     }
@@ -206,12 +206,12 @@ impl SubjectValidator {
             SubjectValidationMode::Enabled(identity_providers) => {
                 let identity_provider = identity_provider.ok_or_else(|| {
                     AppError::Internal(
-                        "installation is missing an identity-provider reference".to_string(),
+                        "access-policy is missing an identity-provider reference".to_string(),
                     )
                 })?;
                 identity_providers.get(identity_provider).ok_or_else(|| {
                     AppError::Internal(format!(
-                        "installation references unknown identity-provider '{identity_provider}'"
+                        "access-policy references unknown identity-provider '{identity_provider}'"
                     ))
                 })?
             }

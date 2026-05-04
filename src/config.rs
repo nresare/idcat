@@ -19,8 +19,8 @@ pub struct Config {
     pub identity_providers: Vec<IdentityProviderConfig>,
     #[serde(rename = "github-app", default)]
     pub github_apps: Vec<GithubAppConfig>,
-    #[serde(rename = "installation", default)]
-    pub installations: Vec<InstallationConfig>,
+    #[serde(rename = "access-policy", default)]
+    pub access_policies: Vec<AccessPolicyConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
@@ -54,7 +54,7 @@ pub struct GithubAppConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct InstallationConfig {
+pub struct AccessPolicyConfig {
     pub github_app: String,
     #[serde(rename = "identity-provider")]
     pub identity_provider: Option<String>,
@@ -80,8 +80,8 @@ impl Config {
         if self.key_source == KeySource::Kms && !cfg!(feature = "kms") {
             anyhow::bail!("key-source 'kms' requires idcat to be built with the 'kms' feature");
         }
-        if self.installations.is_empty() {
-            anyhow::bail!("at least one [[installation]] entry is required");
+        if self.access_policies.is_empty() {
+            anyhow::bail!("at least one [[access-policy]] entry is required");
         }
         let mut identity_providers = std::collections::HashSet::new();
         if !disable_auth && self.identity_providers.is_empty() {
@@ -128,49 +128,49 @@ impl Config {
             }
         }
 
-        let mut installations = std::collections::HashSet::new();
-        for installation in &self.installations {
-            if installation.github_app.is_empty() {
-                anyhow::bail!("installation entries must define github-app");
+        let mut access_policies = std::collections::HashSet::new();
+        for access_policy in &self.access_policies {
+            if access_policy.github_app.is_empty() {
+                anyhow::bail!("access-policy entries must define github-app");
             }
-            if !github_apps.contains(&installation.github_app) {
+            if !github_apps.contains(&access_policy.github_app) {
                 anyhow::bail!(
-                    "installation references unknown github-app '{}'",
-                    installation.github_app
+                    "access-policy references unknown github-app '{}'",
+                    access_policy.github_app
                 );
             }
             if !disable_auth {
                 let identity_provider =
-                    installation.identity_provider.as_deref().ok_or_else(|| {
+                    access_policy.identity_provider.as_deref().ok_or_else(|| {
                         anyhow::anyhow!(
-                            "installation for github-app '{}' must define identity-provider",
-                            installation.github_app
+                            "access-policy for github-app '{}' must define identity-provider",
+                            access_policy.github_app
                         )
                     })?;
                 if identity_provider.is_empty() {
                     anyhow::bail!(
-                        "installation for github-app '{}' identity-provider must not be empty",
-                        installation.github_app
+                        "access-policy for github-app '{}' identity-provider must not be empty",
+                        access_policy.github_app
                     );
                 }
                 if !identity_providers.contains(identity_provider) {
                     anyhow::bail!(
-                        "installation for github-app '{}' references unknown identity-provider '{}'",
-                        installation.github_app,
+                        "access-policy for github-app '{}' references unknown identity-provider '{}'",
+                        access_policy.github_app,
                         identity_provider
                     );
                 }
             }
-            if !disable_auth && installation.required_claims.is_empty() {
+            if !disable_auth && access_policy.required_claims.is_empty() {
                 anyhow::bail!(
-                    "installation for github-app '{}' must define at least one required-claim",
-                    installation.github_app
+                    "access-policy for github-app '{}' must define at least one required-claim",
+                    access_policy.github_app
                 );
             }
-            if !installations.insert(installation.github_app.clone()) {
+            if !access_policies.insert(access_policy.github_app.clone()) {
                 anyhow::bail!(
-                    "duplicate installation for github-app '{}'",
-                    installation.github_app
+                    "duplicate access-policy for github-app '{}'",
+                    access_policy.github_app
                 );
             }
         }
@@ -237,11 +237,11 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 -----END PUBLIC KEY-----
 """
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 identity-provider = "kubernetes"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 "#,
         )
@@ -265,7 +265,7 @@ name = "default"
 app-id = 42
 secret-key = "default"
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 "#,
         )
@@ -287,7 +287,7 @@ name = "default"
 app-id = 42
 secret-key = "default"
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 "#,
         )
@@ -301,7 +301,7 @@ github-app = "default"
     }
 
     #[test]
-    fn rejects_duplicate_installations_for_github_app() {
+    fn rejects_duplicate_access_policies_for_github_app() {
         let config: Config = toml::from_str(
             r#"
 [[github-app]]
@@ -324,18 +324,18 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 -----END PUBLIC KEY-----
 """
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 identity-provider = "kubernetes"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 identity-provider = "kubernetes"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 "#,
         )
@@ -344,12 +344,12 @@ sub = "system:serviceaccount:idelephant:default"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "duplicate installation for github-app 'default'"
+            "duplicate access-policy for github-app 'default'"
         );
     }
 
     #[test]
-    fn rejects_installation_with_unknown_identity_provider() {
+    fn rejects_access_policy_with_unknown_identity_provider() {
         let config: Config = toml::from_str(
             r#"
 [[identity-provider]]
@@ -362,11 +362,11 @@ name = "default"
 app-id = 42
 secret-key = "private-key.pem"
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 identity-provider = "buildkite"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:idelephant:default"
 "#,
         )
@@ -375,7 +375,7 @@ sub = "system:serviceaccount:idelephant:default"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "installation for github-app 'default' references unknown identity-provider 'buildkite'"
+            "access-policy for github-app 'default' references unknown identity-provider 'buildkite'"
         );
     }
 
@@ -388,7 +388,7 @@ name = "default"
 app-id = 42
 secret-key = "private-key.pem"
 
-[[installation]]
+[[access-policy]]
 github-app = "default"
 "#,
         )

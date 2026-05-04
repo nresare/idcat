@@ -271,27 +271,27 @@ async fn create_installation_token_for_repo(
     };
     debug!(github_app = %github_app_name, repo = %repo, "selecting GitHub App config");
     let github_app = state.github_app(github_app_name)?;
-    debug!(github_app = %github_app_name, repo = %repo, "selecting installation config");
-    let installation = state.installation(github_app_name, repo)?;
+    debug!(github_app = %github_app_name, repo = %repo, "selecting access policy");
+    let access_policy = state.access_policy(github_app_name, repo)?;
     debug!(
         github_app = %github_app_name,
         repo = %repo,
-        identity_provider = ?installation.identity_provider,
+        identity_provider = ?access_policy.identity_provider,
         "validating source token claims"
     );
     let source_claims = state.subject_validator.validate(
-        installation.identity_provider.as_deref(),
+        access_policy.identity_provider.as_deref(),
         bearer_token.as_deref(),
     )?;
     let source_subject = source_claims.subject();
     debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
-    state.authorize_installation(github_app_name, repo, installation, &source_claims)?;
+    state.authorize_access_policy(github_app_name, repo, access_policy, &source_claims)?;
     debug!(
         github_app = %github_app_name,
         repo = %repo,
         subject = %source_subject,
         secret_key = %github_app.secret_key,
-        "installation config selected"
+        "access policy selected"
     );
     debug!(github_app = %github_app_name, repo = %repo, secret_key = %github_app.secret_key, key_source = ?state.key_source, "preparing GitHub App signer");
     let signer = state.signer(&github_app.secret_key)?;
