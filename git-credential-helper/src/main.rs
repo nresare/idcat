@@ -28,7 +28,7 @@ fn run() -> anyhow::Result<()> {
     init_logging();
 
     let cli = Cli::try_parse()?;
-    if cli.action != Action::Fill {
+    if cli.action != Action::Get {
         return Ok(());
     }
 
@@ -80,13 +80,9 @@ struct Cli {
 
 #[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Action {
-    Fill,
     Get,
     Store,
     Erase,
-    Approve,
-    Reject,
-    Capability,
 }
 
 fn init_logging() {
