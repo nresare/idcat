@@ -22,17 +22,17 @@ name = "release-bot"
 app-id = 234567
 secret-key = "release-bot-private-key.pem"
 
-[[installation]]
+[[access-policy]]
 github-app = "deployments"
 identity-provider = "buildkite"
 
-[installation.required-claims]
+[access-policy.required-claims]
 organization_slug = "my-buildkite-org"
 pipeline_slug = "deploy-idcat"
 
-[[installation]]
+[[access-policy]]
 github-app = "release-bot"
 identity-provider = "kubernetes"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:default:default"

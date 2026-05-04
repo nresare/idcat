@@ -19,11 +19,11 @@ name = "deployments"
 app-id = 123456
 secret-key = "deployments-private-key.pem"
 
-[[installation]]
+[[access-policy]]
 github-app = "deployments"
 identity-provider = "kubernetes"
 
-[installation.required-claims]
+[access-policy.required-claims]
 sub = "system:serviceaccount:default:default"
 ```
 
@@ -60,7 +60,7 @@ ghs_...
 
 To proxy a repository-scoped GitHub API request through an installation token, prefix the GitHub
 `/repos/{owner}/{repo}` path with `/proxy/{github-app}`. The GitHub app name selects the
-configured GitHub App and authorization policy, while the owner/repo pair comes from the proxied
+configured GitHub App and access policy, while the owner/repo pair comes from the proxied
 GitHub API path:
 
 ```sh
