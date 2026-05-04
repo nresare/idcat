@@ -272,20 +272,50 @@ async fn create_installation_token_for_repo(
     debug!(github_app = %github_app_name, repo = %repo, "selecting GitHub App config");
     let github_app = state.github_app(github_app_name)?;
     debug!(github_app = %github_app_name, repo = %repo, "selecting access policy");
-    let access_policy = state.access_policy(github_app_name, repo)?;
-    debug!(
-        github_app = %github_app_name,
-        repo = %repo,
-        identity_provider = ?access_policy.identity_provider,
-        "validating source token claims"
-    );
-    let source_claims = state.subject_validator.validate(
-        access_policy.identity_provider.as_deref(),
-        bearer_token.as_deref(),
-    )?;
+    let access_policies = state.access_policies(github_app_name, repo)?;
+    let mut source_claims = None;
+    let mut last_authorization_error = None;
+    for access_policy in access_policies {
+        debug!(
+            github_app = %github_app_name,
+            repo = %repo,
+            identity_provider = ?access_policy.identity_provider,
+            "validating source token claims against access policy"
+        );
+        match state.subject_validator.validate(
+            access_policy.identity_provider.as_deref(),
+            bearer_token.as_deref(),
+        ) {
+            Ok(claims) => {
+                let source_subject = claims.subject();
+                debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
+                match state.authorize_access_policy(github_app_name, repo, access_policy, &claims) {
+                    Ok(()) => {
+                        source_claims = Some(claims);
+                        break;
+                    }
+                    Err(error) => {
+                        debug!(github_app = %github_app_name, repo = %repo, error = %error, "access policy did not authorize source claims");
+                        last_authorization_error = Some(error);
+                    }
+                }
+            }
+            Err(error) => {
+                debug!(github_app = %github_app_name, repo = %repo, error = %error, "source token did not validate against access policy");
+                last_authorization_error = Some(error);
+            }
+        }
+    }
+    let source_claims = source_claims.ok_or_else(|| match last_authorization_error {
+        Some(AppError::Internal(error)) => AppError::Internal(error),
+        Some(error) => AppError::Unauthorized(format!(
+            "no access-policy authorized repo '{repo}' with github_app '{github_app_name}': {error}"
+        )),
+        None => AppError::Unauthorized(format!(
+            "no access-policy authorized repo '{repo}' with github_app '{github_app_name}'"
+        )),
+    })?;
     let source_subject = source_claims.subject();
-    debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
-    state.authorize_access_policy(github_app_name, repo, access_policy, &source_claims)?;
     debug!(
         github_app = %github_app_name,
         repo = %repo,

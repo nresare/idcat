@@ -31,8 +31,15 @@ organization_slug = "my-buildkite-org"
 pipeline_slug = "deploy-idcat"
 
 [[access-policy]]
-github-app = "release-bot"
+github-app = "deployments"
 identity-provider = "kubernetes"
 
 [access-policy.required-claims]
 sub = "system:serviceaccount:default:default"
+
+[[access-policy]]
+github-app = "release-bot"
+identity-provider = "kubernetes"
+
+[access-policy.required-claims]
+sub = "system:serviceaccount:release:release-bot"

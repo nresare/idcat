@@ -56,24 +56,27 @@ impl AppState {
             .ok_or_else(|| AppError::NotFound(format!("unknown github_app '{github_app_name}'")))
     }
 
-    pub fn access_policy(
+    pub fn access_policies(
         &self,
         github_app_name: &str,
         repo: &str,
-    ) -> Result<&AccessPolicyConfig, AppError> {
+    ) -> Result<Vec<&AccessPolicyConfig>, AppError> {
         debug!(
             github_app = %github_app_name,
             repo = %repo,
             "searching configured access policies"
         );
-        self.access_policies
+        let access_policies: Vec<_> = self
+            .access_policies
             .iter()
-            .find(|access_policy| access_policy.github_app == github_app_name)
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "unknown access-policy for github_app '{github_app_name}'"
-                ))
-            })
+            .filter(|access_policy| access_policy.github_app == github_app_name)
+            .collect();
+        if access_policies.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "unknown access-policy for github_app '{github_app_name}'"
+            )));
+        }
+        Ok(access_policies)
     }
 
     pub fn authorize_access_policy(
@@ -247,9 +250,13 @@ impl SubjectValidator {
 
 #[cfg(test)]
 mod tests {
-    use super::SourceClaims;
+    use super::{AppState, SourceClaims, SubjectValidator};
+    use crate::config::{AccessPolicyConfig, GithubAppConfig, KeySource};
+    use crate::github::GithubClient;
+    use crate::secret::FilePrivateKeyStore;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     #[test]
     fn required_claims_match_subject_and_custom_claims() {
@@ -293,5 +300,51 @@ mod tests {
             claims.first_missing_required_claim(&required_claims),
             Some(("organization_slug", "my-buildkite-org"))
         );
+    }
+
+    #[test]
+    fn access_policies_returns_all_policies_for_github_app() {
+        let state = AppState {
+            github_apps: Arc::new(vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+            }]),
+            access_policies: Arc::new(vec![
+                AccessPolicyConfig {
+                    github_app: "default".to_string(),
+                    identity_provider: Some("buildkite".to_string()),
+                    required_claims: BTreeMap::from([(
+                        "pipeline_slug".to_string(),
+                        "deploy-idcat".to_string(),
+                    )]),
+                },
+                AccessPolicyConfig {
+                    github_app: "default".to_string(),
+                    identity_provider: Some("kubernetes".to_string()),
+                    required_claims: BTreeMap::from([(
+                        "sub".to_string(),
+                        "system:serviceaccount:default:default".to_string(),
+                    )]),
+                },
+                AccessPolicyConfig {
+                    github_app: "release-bot".to_string(),
+                    identity_provider: Some("kubernetes".to_string()),
+                    required_claims: BTreeMap::new(),
+                },
+            ]),
+            subject_validator: SubjectValidator::new(Vec::new(), true),
+            github: GithubClient::new().unwrap(),
+            key_source: KeySource::Local,
+            private_key_store: FilePrivateKeyStore::new("/var/run/secrets/idcat"),
+            #[cfg(feature = "kms")]
+            kms_signers: None,
+        };
+
+        let policies = state.access_policies("default", "noa/idcat").unwrap();
+
+        assert_eq!(policies.len(), 2);
+        assert_eq!(policies[0].identity_provider.as_deref(), Some("buildkite"));
+        assert_eq!(policies[1].identity_provider.as_deref(), Some("kubernetes"));
     }
 }
