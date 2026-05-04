@@ -128,7 +128,6 @@ impl Config {
             }
         }
 
-        let mut access_policies = std::collections::HashSet::new();
         for access_policy in &self.access_policies {
             if access_policy.github_app.is_empty() {
                 anyhow::bail!("access-policy entries must define github-app");
@@ -164,12 +163,6 @@ impl Config {
             if !disable_auth && access_policy.required_claims.is_empty() {
                 anyhow::bail!(
                     "access-policy for github-app '{}' must define at least one required-claim",
-                    access_policy.github_app
-                );
-            }
-            if !access_policies.insert(access_policy.github_app.clone()) {
-                anyhow::bail!(
-                    "duplicate access-policy for github-app '{}'",
                     access_policy.github_app
                 );
             }
@@ -301,7 +294,7 @@ github-app = "default"
     }
 
     #[test]
-    fn rejects_duplicate_access_policies_for_github_app() {
+    fn accepts_multiple_access_policies_for_github_app() {
         let config: Config = toml::from_str(
             r#"
 [[github-app]]
@@ -341,11 +334,7 @@ sub = "system:serviceaccount:idelephant:default"
         )
         .unwrap();
 
-        let error = config.validate(false).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "duplicate access-policy for github-app 'default'"
-        );
+        config.validate(false).unwrap();
     }
 
     #[test]
