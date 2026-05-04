@@ -9,7 +9,7 @@ use crate::credential::{
 };
 use crate::idcat::fetch_installation_token;
 use crate::token_source::run_token_source;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::env;
 use std::path::PathBuf;
 use tracing::info;
@@ -27,12 +27,8 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     init_logging();
 
-    let cli = Cli::parse();
-    if !matches!(cli.action.as_deref(), Some("fill") | Some("get")) {
-        info!(
-            action = ?cli.action,
-            "exiting without output because the credential helper action is not supported"
-        );
+    let cli = Cli::try_parse()?;
+    if cli.action != Action::Fill {
         return Ok(());
     }
 
@@ -78,14 +74,25 @@ struct Cli {
     #[arg(long = "config", short = 'c')]
     config_path: Option<PathBuf>,
 
-    #[arg()]
-    action: Option<String>,
+    #[arg(value_enum)]
+    action: Action,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum Action {
+    Fill,
+    Get,
+    Store,
+    Erase,
+    Approve,
+    Reject,
+    Capability,
 }
 
 fn init_logging() {
     tracing_subscriber::registry()
         .with(EnvFilter::new(env::var("RUST_LOG").unwrap_or_else(|_| {
-            "git_credential_helper_idcat=info".to_owned()
+            format!("{}=info", env!("CARGO_CRATE_NAME"))
         })))
         .with(
             tracing_subscriber::fmt::layer()
