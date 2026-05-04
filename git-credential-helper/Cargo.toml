@@ -1,5 +1,5 @@
 [package]
-name = "git-credential-helper-idcat"
+name = "git-credential-idcat"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
