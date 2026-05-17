@@ -9,10 +9,13 @@ It reads a GitHub App RSA private key from the filesystem, signs a short-lived G
 ```toml
 private-key-directory = "/var/run/secrets/idcat"
 
-[[identity-provider]]
-name = "kubernetes"
+[[role]]
+name = "kubernetes-default"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
+
+[role.claims]
+sub = "system:serviceaccount:default:default"
 
 [[github-app]]
 name = "deployments"
@@ -21,15 +24,12 @@ secret-key = "deployments-private-key.pem"
 
 [[access-policy]]
 github-app = "deployments"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:default:default"
+role = "kubernetes-default"
 ```
 
-See `idcat.toml.example` for a fuller configuration with multiple identity providers and GitHub Apps.
+See `idcat.toml.example` for a fuller configuration with multiple roles and GitHub Apps.
 Multiple access policies may reference the same GitHub App to allow alternative authentication
-methods or claim requirements.
+methods or role trust requirements.
 
 Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private-key-directory`, but `idcat` only reads files from the filesystem.
 
@@ -77,7 +77,7 @@ curl -X GET \
 cargo run -- --config-file idcat.toml
 ```
 
-For local testing, authentication and `required-claims` checks can be bypassed:
+For local testing, authentication and role checks can be bypassed:
 
 ```sh
 cargo run -- --config-file idcat.toml --disable-auth

@@ -3,7 +3,6 @@
 
 use anyhow::Context;
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -15,8 +14,8 @@ pub struct Config {
     pub key_source: KeySource,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
-    #[serde(rename = "identity-provider", default)]
-    pub identity_providers: Vec<IdentityProviderConfig>,
+    #[serde(rename = "role", default)]
+    pub roles: Vec<authzoo::RoleConfig>,
     #[serde(rename = "github-app", default)]
     pub github_apps: Vec<GithubAppConfig>,
     #[serde(rename = "access-policy", default)]
@@ -33,19 +32,6 @@ pub enum KeySource {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct IdentityProviderConfig {
-    pub name: String,
-    #[serde(default)]
-    pub audience: String,
-    #[serde(default)]
-    pub issuer: String,
-    pub validation_key: Option<String>,
-    #[serde(default = "default_authentication_algorithm")]
-    pub algorithm: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub struct GithubAppConfig {
     pub name: String,
     pub app_id: u64,
@@ -56,10 +42,7 @@ pub struct GithubAppConfig {
 #[serde(rename_all = "kebab-case")]
 pub struct AccessPolicyConfig {
     pub github_app: String,
-    #[serde(rename = "identity-provider")]
-    pub identity_provider: Option<String>,
-    #[serde(default)]
-    pub required_claims: BTreeMap<String, String>,
+    pub role: Option<String>,
 }
 
 impl Config {
@@ -83,15 +66,9 @@ impl Config {
         if self.access_policies.is_empty() {
             anyhow::bail!("at least one [[access-policy]] entry is required");
         }
-        let mut identity_providers = std::collections::HashSet::new();
-        if !disable_auth && self.identity_providers.is_empty() {
-            anyhow::bail!("at least one [[identity-provider]] entry is required");
-        }
-        for identity_provider in &self.identity_providers {
-            identity_provider.validate()?;
-            if !identity_providers.insert(identity_provider.name.clone()) {
-                anyhow::bail!("duplicate identity-provider '{}'", identity_provider.name);
-            }
+        let role_validator = authzoo::TokenValidator::new(self.roles.clone())?;
+        if !disable_auth && self.roles.is_empty() {
+            anyhow::bail!("at least one [[role]] entry is required");
         }
 
         if self.github_apps.is_empty() {
@@ -139,53 +116,21 @@ impl Config {
                 );
             }
             if !disable_auth {
-                let identity_provider =
-                    access_policy.identity_provider.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "access-policy for github-app '{}' must define identity-provider",
-                            access_policy.github_app
-                        )
-                    })?;
-                if identity_provider.is_empty() {
+                let role = access_policy.role.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "access-policy for github-app '{}' must define role",
+                        access_policy.github_app
+                    )
+                })?;
+                if role.is_empty() {
                     anyhow::bail!(
-                        "access-policy for github-app '{}' identity-provider must not be empty",
+                        "access-policy for github-app '{}' role must not be empty",
                         access_policy.github_app
                     );
                 }
-                if !identity_providers.contains(identity_provider) {
-                    anyhow::bail!(
-                        "access-policy for github-app '{}' references unknown identity-provider '{}'",
-                        access_policy.github_app,
-                        identity_provider
-                    );
-                }
-            }
-            if !disable_auth && access_policy.required_claims.is_empty() {
-                anyhow::bail!(
-                    "access-policy for github-app '{}' must define at least one required-claim",
-                    access_policy.github_app
-                );
+                role_validator.ensure_roles_exist([role])?;
             }
         }
-        Ok(())
-    }
-}
-
-impl IdentityProviderConfig {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if self.name.is_empty() {
-            anyhow::bail!("identity-provider names must not be empty");
-        }
-        if self.audience.is_empty() {
-            anyhow::bail!(
-                "identity-provider '{}' audience must not be empty",
-                self.name
-            );
-        }
-        if self.issuer.is_empty() {
-            anyhow::bail!("identity-provider '{}' issuer must not be empty", self.name);
-        }
-        crate::auth::algorithm(self)?;
         Ok(())
     }
 }
@@ -196,10 +141,6 @@ fn default_bind_address() -> String {
 
 fn default_private_key_directory() -> String {
     "/var/run/secrets/idcat".to_string()
-}
-
-fn default_authentication_algorithm() -> String {
-    "RS256".to_string()
 }
 
 #[cfg(test)]
@@ -215,8 +156,8 @@ name = "default"
 app-id = 42
 secret-key = "private-key.pem"
 
-[[identity-provider]]
-name = "kubernetes"
+[[role]]
+name = "kubernetes-default"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 validation-key = """
@@ -230,12 +171,12 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 -----END PUBLIC KEY-----
 """
 
+[role.claims]
+sub = "system:serviceaccount:idelephant:default"
+
 [[access-policy]]
 github-app = "default"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:idelephant:default"
+role = "kubernetes-default"
 "#,
         )
         .unwrap();
@@ -302,8 +243,8 @@ name = "default"
 app-id = 42
 secret-key = "private-key.pem"
 
-[[identity-provider]]
-name = "kubernetes"
+[[role]]
+name = "kubernetes-default"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 validation-key = """
@@ -319,17 +260,11 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 
 [[access-policy]]
 github-app = "default"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:idelephant:default"
+role = "kubernetes-default"
 
 [[access-policy]]
 github-app = "default"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:idelephant:default"
+role = "kubernetes-default"
 "#,
         )
         .unwrap();
@@ -338,10 +273,10 @@ sub = "system:serviceaccount:idelephant:default"
     }
 
     #[test]
-    fn rejects_access_policy_with_unknown_identity_provider() {
+    fn rejects_access_policy_with_unknown_role() {
         let config: Config = toml::from_str(
             r#"
-[[identity-provider]]
+[[role]]
 name = "kubernetes"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
@@ -353,19 +288,13 @@ secret-key = "private-key.pem"
 
 [[access-policy]]
 github-app = "default"
-identity-provider = "buildkite"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:idelephant:default"
+role = "buildkite"
 "#,
         )
         .unwrap();
 
         let error = config.validate(false).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "access-policy for github-app 'default' references unknown identity-provider 'buildkite'"
-        );
+        assert_eq!(error.to_string(), "unknown role 'buildkite'");
     }
 
     #[test]

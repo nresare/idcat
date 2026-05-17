@@ -2,15 +2,30 @@ bind-address = "0.0.0.0:8080"
 key-source = "local"
 private-key-directory = "/var/run/secrets/idcat"
 
-[[identity-provider]]
-name = "kubernetes"
+[[role]]
+name = "kubernetes-default"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
 
-[[identity-provider]]
-name = "buildkite"
+[role.claims]
+sub = "system:serviceaccount:default:default"
+
+[[role]]
+name = "buildkite-deploy-idcat"
 audience = "idcat"
 issuer = "https://agent.buildkite.com"
+
+[role.claims]
+organization_slug = "my-buildkite-org"
+pipeline_slug = "deploy-idcat"
+
+[[role]]
+name = "kubernetes-release-bot"
+audience = "idcat"
+issuer = "https://kubernetes.default.svc"
+
+[role.claims]
+sub = "system:serviceaccount:release:release-bot"
 
 [[github-app]]
 name = "deployments"
@@ -24,22 +39,12 @@ secret-key = "release-bot-private-key.pem"
 
 [[access-policy]]
 github-app = "deployments"
-identity-provider = "buildkite"
-
-[access-policy.required-claims]
-organization_slug = "my-buildkite-org"
-pipeline_slug = "deploy-idcat"
+role = "buildkite-deploy-idcat"
 
 [[access-policy]]
 github-app = "deployments"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:default:default"
+role = "kubernetes-default"
 
 [[access-policy]]
 github-app = "release-bot"
-identity-provider = "kubernetes"
-
-[access-policy.required-claims]
-sub = "system:serviceaccount:release:release-bot"
+role = "kubernetes-release-bot"

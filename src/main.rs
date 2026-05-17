@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-mod auth;
 mod config;
 mod error;
 mod github;
@@ -9,7 +8,6 @@ mod jwt;
 #[cfg(feature = "kms")]
 #[allow(dead_code)]
 mod kms;
-mod kubernetes;
 mod secret;
 mod service;
 mod signer;
@@ -279,17 +277,17 @@ async fn create_installation_token_for_repo(
         debug!(
             github_app = %github_app_name,
             repo = %repo,
-            identity_provider = ?access_policy.identity_provider,
+            role = ?access_policy.role,
             "validating source token claims against access policy"
         );
-        match state.subject_validator.validate(
-            access_policy.identity_provider.as_deref(),
-            bearer_token.as_deref(),
-        ) {
+        match state
+            .subject_validator
+            .validate(access_policy.role.as_deref(), bearer_token.as_deref())
+        {
             Ok(claims) => {
                 let source_subject = claims.subject();
                 debug!(github_app = %github_app_name, repo = %repo, subject = %source_subject, "source token claims accepted");
-                match state.authorize_access_policy(github_app_name, repo, access_policy, &claims) {
+                match state.authorize_access_policy(github_app_name, repo, &claims) {
                     Ok(()) => {
                         source_claims = Some(claims);
                         break;
