@@ -3,6 +3,10 @@ name = "git-credential-idcat"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "Git credential helper that obtains GitHub installation tokens from idcat"
+homepage = "https://github.com/nresare/idcat"
+repository = "https://github.com/nresare/idcat"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
