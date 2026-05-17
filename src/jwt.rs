@@ -4,7 +4,6 @@
 use crate::signer::Signer;
 use anyhow::Context;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use jsonwebtoken::{Algorithm, Header};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +15,12 @@ struct GithubAppClaims {
     iat: u64,
     exp: u64,
     iss: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GithubAppHeader {
+    alg: &'static str,
+    typ: &'static str,
 }
 
 pub async fn build_github_app_jwt(
@@ -36,7 +41,10 @@ async fn build_github_app_jwt_at(
         exp: issued_at + GITHUB_APP_JWT_TTL_SECONDS,
         iss: github_app_id.to_string(),
     };
-    let header = Header::new(Algorithm::RS256);
+    let header = GithubAppHeader {
+        alg: "RS256",
+        typ: "JWT",
+    };
     let encoded_header =
         encode_jwt_part(&header).context("failed to encode GitHub App JWT header")?;
     let encoded_claims =
