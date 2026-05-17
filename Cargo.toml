@@ -16,6 +16,7 @@ kms = ["dep:aws-config", "dep:aws-sdk-kms"]
 
 [dependencies]
 anyhow = "1.0"
+authzoo = "0.1.0"
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 aws-sdk-kms = { version = "1", optional = true }
 axum = "0.8"

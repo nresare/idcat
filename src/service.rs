@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-use crate::auth;
-use crate::config::{
-    AccessPolicyConfig, Config, GithubAppConfig, IdentityProviderConfig, KeySource,
-};
+use crate::config::{AccessPolicyConfig, Config, GithubAppConfig, KeySource};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
 use crate::signer::{LocalSigner, Signer};
-use jsonwebtoken::{Validation, decode};
-use serde::Deserialize;
-use serde_json::Value;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -38,7 +31,7 @@ pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Res
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
         access_policies: Arc::new(config.access_policies.clone()),
-        subject_validator: SubjectValidator::new(config.identity_providers.clone(), disable_auth),
+        subject_validator: SubjectValidator::new(config.roles.clone(), disable_auth)?,
         github: GithubClient::new()?,
         key_source: config.key_source,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
@@ -83,18 +76,9 @@ impl AppState {
         &self,
         github_app_name: &str,
         repo: &str,
-        access_policy: &AccessPolicyConfig,
-        claims: &SourceClaims,
+        claims: &authzoo::ValidatedClaims,
     ) -> Result<(), AppError> {
         let subject = claims.subject();
-        if self.subject_validator.auth_enabled()
-            && let Some((claim_name, required_value)) =
-                claims.first_missing_required_claim(&access_policy.required_claims)
-        {
-            return Err(AppError::Unauthorized(format!(
-                "claim '{claim_name}' must equal '{required_value}' to use repo '{repo}' with github_app '{github_app_name}'"
-            )));
-        }
 
         debug!(
             github_app = %github_app_name,
@@ -140,107 +124,50 @@ pub struct SubjectValidator {
 #[derive(Clone)]
 enum SubjectValidationMode {
     Disabled,
-    Enabled(BTreeMap<String, IdentityProviderConfig>),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SourceClaims {
-    sub: String,
-    #[serde(flatten)]
-    claims: BTreeMap<String, Value>,
-}
-
-impl SourceClaims {
-    fn unauthenticated() -> Self {
-        Self {
-            sub: "unauthenticated".to_string(),
-            claims: BTreeMap::new(),
-        }
-    }
-
-    pub fn subject(&self) -> &str {
-        &self.sub
-    }
-
-    fn first_missing_required_claim<'a>(
-        &self,
-        required_claims: &'a BTreeMap<String, String>,
-    ) -> Option<(&'a str, &'a str)> {
-        required_claims
-            .iter()
-            .find(|(claim_name, required_value)| {
-                self.claim_value(claim_name.as_str()) != Some(required_value.as_str())
-            })
-            .map(|(claim_name, required_value)| (claim_name.as_str(), required_value.as_str()))
-    }
-
-    fn claim_value(&self, claim_name: &str) -> Option<&str> {
-        if claim_name == "sub" {
-            return Some(&self.sub);
-        }
-        self.claims.get(claim_name).and_then(Value::as_str)
-    }
+    Enabled(authzoo::TokenValidator),
 }
 
 impl SubjectValidator {
-    pub fn new(identity_providers: Vec<IdentityProviderConfig>, disable_auth: bool) -> Self {
+    pub fn new(roles: Vec<authzoo::RoleConfig>, disable_auth: bool) -> anyhow::Result<Self> {
         let mode = if disable_auth {
             SubjectValidationMode::Disabled
         } else {
-            let identity_providers = identity_providers
-                .into_iter()
-                .map(|identity_provider| (identity_provider.name.clone(), identity_provider))
-                .collect();
-            SubjectValidationMode::Enabled(identity_providers)
+            SubjectValidationMode::Enabled(authzoo::TokenValidator::new(roles)?)
         };
-        Self { mode }
+        Ok(Self { mode })
     }
 
     pub fn validate(
         &self,
-        identity_provider: Option<&str>,
+        role: Option<&str>,
         bearer_token: Option<&str>,
-    ) -> Result<SourceClaims, AppError> {
-        let authentication = match &self.mode {
+    ) -> Result<authzoo::ValidatedClaims, AppError> {
+        let validator = match &self.mode {
             SubjectValidationMode::Disabled => {
                 debug!("source token claim validation skipped because auth is disabled");
-                return Ok(SourceClaims::unauthenticated());
+                return Ok(unauthenticated_claims());
             }
-            SubjectValidationMode::Enabled(identity_providers) => {
-                let identity_provider = identity_provider.ok_or_else(|| {
-                    AppError::Internal(
-                        "access-policy is missing an identity-provider reference".to_string(),
-                    )
+            SubjectValidationMode::Enabled(validator) => {
+                let role = role.ok_or_else(|| {
+                    AppError::Internal("access-policy is missing a role reference".to_string())
                 })?;
-                identity_providers.get(identity_provider).ok_or_else(|| {
-                    AppError::Internal(format!(
-                        "access-policy references unknown identity-provider '{identity_provider}'"
-                    ))
-                })?
+                (validator, role)
             }
         };
         let bearer_token = bearer_token
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
-        let algorithm = auth::algorithm(authentication)?;
         debug!(
-            algorithm = ?algorithm,
-            audience = %authentication.audience,
-            issuer = %authentication.issuer,
+            role = %validator.1,
             "validating source token claims"
         );
-        let mut validation = Validation::new(algorithm);
-        validation.set_audience(&[&authentication.audience]);
-        validation.set_issuer(&[&authentication.issuer]);
-        debug!("resolving source token decoding key");
-        let decoding_key =
-            auth::resolving_decoding_key(authentication, bearer_token).map_err(AppError::from)?;
-
-        let decoded =
-            decode::<SourceClaims>(bearer_token, &decoding_key, &validation).map_err(|error| {
+        let claims = validator
+            .0
+            .validate_claims(validator.1, bearer_token)
+            .map_err(|error| {
                 AppError::Unauthorized(format!("failed to validate source token: {error}"))
             })?;
-        debug!(subject = %decoded.claims.sub, "source token claims validated");
-        Ok(decoded.claims)
+        debug!(subject = %claims.subject(), "source token claims validated");
+        Ok(claims)
     }
 
     pub fn auth_enabled(&self) -> bool {
@@ -248,59 +175,18 @@ impl SubjectValidator {
     }
 }
 
+fn unauthenticated_claims() -> authzoo::ValidatedClaims {
+    serde_json::from_value(serde_json::json!({ "sub": "unauthenticated" }))
+        .expect("static unauthenticated claims must deserialize")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppState, SourceClaims, SubjectValidator};
+    use super::{AppState, SubjectValidator};
     use crate::config::{AccessPolicyConfig, GithubAppConfig, KeySource};
     use crate::github::GithubClient;
     use crate::secret::FilePrivateKeyStore;
-    use serde_json::json;
-    use std::collections::BTreeMap;
     use std::sync::Arc;
-
-    #[test]
-    fn required_claims_match_subject_and_custom_claims() {
-        let claims: SourceClaims = serde_json::from_value(json!({
-            "sub": "system:serviceaccount:default:default",
-            "organization_slug": "my-buildkite-org",
-            "pipeline_slug": "deploy-idcat"
-        }))
-        .unwrap();
-        let required_claims = BTreeMap::from([
-            (
-                "organization_slug".to_string(),
-                "my-buildkite-org".to_string(),
-            ),
-            ("pipeline_slug".to_string(), "deploy-idcat".to_string()),
-            (
-                "sub".to_string(),
-                "system:serviceaccount:default:default".to_string(),
-            ),
-        ]);
-
-        assert_eq!(claims.first_missing_required_claim(&required_claims), None);
-    }
-
-    #[test]
-    fn required_claims_reject_missing_or_different_values() {
-        let claims: SourceClaims = serde_json::from_value(json!({
-            "sub": "system:serviceaccount:default:default",
-            "pipeline_slug": "other-pipeline"
-        }))
-        .unwrap();
-        let required_claims = BTreeMap::from([
-            (
-                "organization_slug".to_string(),
-                "my-buildkite-org".to_string(),
-            ),
-            ("pipeline_slug".to_string(), "deploy-idcat".to_string()),
-        ]);
-
-        assert_eq!(
-            claims.first_missing_required_claim(&required_claims),
-            Some(("organization_slug", "my-buildkite-org"))
-        );
-    }
 
     #[test]
     fn access_policies_returns_all_policies_for_github_app() {
@@ -313,27 +199,18 @@ mod tests {
             access_policies: Arc::new(vec![
                 AccessPolicyConfig {
                     github_app: "default".to_string(),
-                    identity_provider: Some("buildkite".to_string()),
-                    required_claims: BTreeMap::from([(
-                        "pipeline_slug".to_string(),
-                        "deploy-idcat".to_string(),
-                    )]),
+                    role: Some("buildkite-deploy".to_string()),
                 },
                 AccessPolicyConfig {
                     github_app: "default".to_string(),
-                    identity_provider: Some("kubernetes".to_string()),
-                    required_claims: BTreeMap::from([(
-                        "sub".to_string(),
-                        "system:serviceaccount:default:default".to_string(),
-                    )]),
+                    role: Some("kubernetes-deploy".to_string()),
                 },
                 AccessPolicyConfig {
                     github_app: "release-bot".to_string(),
-                    identity_provider: Some("kubernetes".to_string()),
-                    required_claims: BTreeMap::new(),
+                    role: Some("kubernetes-release".to_string()),
                 },
             ]),
-            subject_validator: SubjectValidator::new(Vec::new(), true),
+            subject_validator: SubjectValidator::new(Vec::new(), true).unwrap(),
             github: GithubClient::new().unwrap(),
             key_source: KeySource::Local,
             private_key_store: FilePrivateKeyStore::new("/var/run/secrets/idcat"),
@@ -344,7 +221,7 @@ mod tests {
         let policies = state.access_policies("default", "noa/idcat").unwrap();
 
         assert_eq!(policies.len(), 2);
-        assert_eq!(policies[0].identity_provider.as_deref(), Some("buildkite"));
-        assert_eq!(policies[1].identity_provider.as_deref(), Some("kubernetes"));
+        assert_eq!(policies[0].role.as_deref(), Some("buildkite-deploy"));
+        assert_eq!(policies[1].role.as_deref(), Some("kubernetes-deploy"));
     }
 }
