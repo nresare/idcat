@@ -8,7 +8,7 @@ use crate::credential::{
     is_github_https_request, read_credential_from_stdin, repo_from_credential,
 };
 use crate::idcat::fetch_installation_token;
-use crate::token_source::run_token_source;
+use crate::token_source::read_token;
 use clap::{Parser, ValueEnum};
 use std::env;
 use std::path::PathBuf;
@@ -54,12 +54,9 @@ fn run() -> anyhow::Result<()> {
         }
     };
 
-    info!(
-        token_source = %config.token_source,
-        "requesting bearer token from token-source"
-    );
-    let oidc_token = run_token_source(&config.token_source)?;
-    info!("bearer token obtained from token-source");
+    info!("obtaining bearer token");
+    let oidc_token = read_token(&config.token_source)?;
+    info!("bearer token obtained");
     let installation_token = fetch_installation_token(&config, &repo, &oidc_token)?;
 
     println!("username=x-access-token");

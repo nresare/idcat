@@ -68,13 +68,14 @@ fn installation_token_url(config: &Config, repo: &Repo) -> anyhow::Result<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TokenSource;
 
     #[test]
     fn builds_installation_token_url() {
         let config = Config {
             github_app: "deployments".to_owned(),
             idcat_endpoint: "https://idcat.example.test/base".to_owned(),
-            token_source: "unused".to_owned(),
+            token_source: TokenSource::Command("unused".to_owned()),
         };
         let repo = Repo {
             owner: "noa".to_owned(),

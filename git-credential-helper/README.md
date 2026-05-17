@@ -3,7 +3,7 @@
 `git-credential-idcat` is a Git credential helper for using private GitHub repositories through
 an idcat service. For more information about idcat, please see https://github.com/nresare/idcat.
 When Git asks for credentials for an HTTPS GitHub remote, the helper picks up a
-bearer token from a local command and uses that with a remote idcat service to exchange it for
+bearer token from a local file or command and uses that with a remote idcat service to exchange it for
 an installation token that can be used to authenticate with GitHub for push and pull operations.
 
 Requests for non-GitHub hosts, non-HTTPS URLs, or GitHub URLs without an owner/repository path are
@@ -40,12 +40,27 @@ Example:
 ```toml
 github-app = "deployments"
 idcat-endpoint = "https://idcat.example.com"
-token-source = "cat /var/run/secrets/tokens/idcat"
+token-path = "/var/run/secrets/tokens/idcat"
 ```
 
 `github-app` selects the GitHub App configured in idcat. `idcat-endpoint` is the base URL of the
-idcat service. `token-source` is a shell command that prints a bearer token accepted by idcat, such
-as a Kubernetes service account token or another OIDC token.
+idcat service.
+
+Exactly one token source must be configured:
+
+```toml
+token-path = "/var/run/secrets/tokens/idcat"
+```
+
+or:
+
+```toml
+token-command = "kubectl create token idcat-client"
+```
+
+`token-path` reads a bearer token accepted by idcat from the filesystem, such as a mounted
+Kubernetes service account token. `token-command` invokes a shell command and uses its standard
+output as the bearer token.
 
 When Git accesses `https://github.com/OWNER/REPO.git`, the helper calls:
 
@@ -53,7 +68,7 @@ When Git accesses `https://github.com/OWNER/REPO.git`, the helper calls:
 POST {idcat-endpoint}/installation-token/{github-app}/OWNER/REPO
 ```
 
-with the token-source output as the bearer token. The response body is returned to Git as the
+with the configured token as the bearer token. The response body is returned to Git as the
 password, with `x-access-token` as the username.
 
 ## License
