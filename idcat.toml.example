@@ -31,20 +31,10 @@ sub = "system:serviceaccount:release:release-bot"
 name = "deployments"
 app-id = 123456
 secret-key = "deployments-private-key.pem"
+allowed-roles = ["buildkite-deploy-idcat", "kubernetes-default"]
 
 [[github-app]]
 name = "release-bot"
 app-id = 234567
 secret-key = "release-bot-private-key.pem"
-
-[[access-policy]]
-github-app = "deployments"
-role = "buildkite-deploy-idcat"
-
-[[access-policy]]
-github-app = "deployments"
-role = "kubernetes-default"
-
-[[access-policy]]
-github-app = "release-bot"
-role = "kubernetes-release-bot"
+allowed-roles = ["kubernetes-release-bot"]

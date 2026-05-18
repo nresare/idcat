@@ -21,15 +21,12 @@ sub = "system:serviceaccount:default:default"
 name = "deployments"
 app-id = 123456
 secret-key = "deployments-private-key.pem"
-
-[[access-policy]]
-github-app = "deployments"
-role = "kubernetes-default"
+allowed-roles = ["kubernetes-default"]
 ```
 
 See `idcat.toml.example` for a fuller configuration with multiple roles and GitHub Apps.
-Multiple access policies may reference the same GitHub App to allow alternative authentication
-methods or role trust requirements.
+List multiple entries in `allowed-roles` to allow alternative authentication methods or
+role trust requirements for the same GitHub App.
 
 Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private-key-directory`, but `idcat` only reads files from the filesystem.
 
@@ -62,7 +59,7 @@ ghs_...
 
 To proxy a repository-scoped GitHub API request through an installation token, prefix the GitHub
 `/repos/{owner}/{repo}` path with `/proxy/{github-app}`. The GitHub app name selects the
-configured GitHub App and access policy, while the owner/repo pair comes from the proxied
+configured GitHub App and its allowed roles, while the owner/repo pair comes from the proxied
 GitHub API path:
 
 ```sh
