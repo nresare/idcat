@@ -18,8 +18,6 @@ pub struct Config {
     pub roles: Vec<authzoo::RoleConfig>,
     #[serde(rename = "github-app", default)]
     pub github_apps: Vec<GithubAppConfig>,
-    #[serde(rename = "access-policy", default)]
-    pub access_policies: Vec<AccessPolicyConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
@@ -36,13 +34,8 @@ pub struct GithubAppConfig {
     pub name: String,
     pub app_id: u64,
     pub secret_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct AccessPolicyConfig {
-    pub github_app: String,
-    pub role: Option<String>,
+    #[serde(default)]
+    pub allowed_roles: Vec<String>,
 }
 
 impl Config {
@@ -62,9 +55,6 @@ impl Config {
         }
         if self.key_source == KeySource::Kms && !cfg!(feature = "kms") {
             anyhow::bail!("key-source 'kms' requires idcat to be built with the 'kms' feature");
-        }
-        if self.access_policies.is_empty() {
-            anyhow::bail!("at least one [[access-policy]] entry is required");
         }
         let role_validator = authzoo::TokenValidator::new(self.roles.clone())?;
         if !disable_auth && self.roles.is_empty() {
@@ -103,32 +93,23 @@ impl Config {
             if !github_apps.insert(github_app.name.clone()) {
                 anyhow::bail!("duplicate github-app '{}'", github_app.name);
             }
-        }
-
-        for access_policy in &self.access_policies {
-            if access_policy.github_app.is_empty() {
-                anyhow::bail!("access-policy entries must define github-app");
-            }
-            if !github_apps.contains(&access_policy.github_app) {
-                anyhow::bail!(
-                    "access-policy references unknown github-app '{}'",
-                    access_policy.github_app
-                );
-            }
             if !disable_auth {
-                let role = access_policy.role.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "access-policy for github-app '{}' must define role",
-                        access_policy.github_app
-                    )
-                })?;
-                if role.is_empty() {
+                if github_app.allowed_roles.is_empty() {
                     anyhow::bail!(
-                        "access-policy for github-app '{}' role must not be empty",
-                        access_policy.github_app
+                        "github-app '{}' must define at least one allowed-role",
+                        github_app.name
                     );
                 }
-                role_validator.ensure_roles_exist([role])?;
+                for role in &github_app.allowed_roles {
+                    if role.is_empty() {
+                        anyhow::bail!(
+                            "github-app '{}' allowed-roles must not contain empty entries",
+                            github_app.name
+                        );
+                    }
+                }
+                role_validator
+                    .ensure_roles_exist(github_app.allowed_roles.iter().map(String::as_str))?;
             }
         }
         Ok(())
@@ -155,6 +136,7 @@ mod tests {
 name = "default"
 app-id = 42
 secret-key = "private-key.pem"
+allowed-roles = ["kubernetes-default"]
 
 [[role]]
 name = "kubernetes-default"
@@ -173,10 +155,6 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 
 [role.claims]
 sub = "system:serviceaccount:idelephant:default"
-
-[[access-policy]]
-github-app = "default"
-role = "kubernetes-default"
 "#,
         )
         .unwrap();
@@ -198,9 +176,6 @@ key-source = "kms"
 name = "default"
 app-id = 42
 secret-key = "default"
-
-[[access-policy]]
-github-app = "default"
 "#,
         )
         .unwrap();
@@ -220,9 +195,6 @@ key-source = "kms"
 name = "default"
 app-id = 42
 secret-key = "default"
-
-[[access-policy]]
-github-app = "default"
 "#,
         )
         .unwrap();
@@ -235,13 +207,14 @@ github-app = "default"
     }
 
     #[test]
-    fn accepts_multiple_access_policies_for_github_app() {
+    fn accepts_multiple_allowed_roles_for_github_app() {
         let config: Config = toml::from_str(
             r#"
 [[github-app]]
 name = "default"
 app-id = 42
 secret-key = "private-key.pem"
+allowed-roles = ["kubernetes-default", "buildkite-deploy"]
 
 [[role]]
 name = "kubernetes-default"
@@ -258,13 +231,12 @@ S0kRuvb81yBZzXrfzskMnNL2PQ7aZuO0D3XHNgzTtze6+jJdgAm2UeSA4QIDAQAB
 -----END PUBLIC KEY-----
 """
 
-[[access-policy]]
-github-app = "default"
-role = "kubernetes-default"
-
-[[access-policy]]
-github-app = "default"
-role = "kubernetes-default"
+[[role]]
+name = "buildkite-deploy"
+audience = "idcat"
+issuer = "https://agent.buildkite.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
 "#,
         )
         .unwrap();
@@ -273,7 +245,7 @@ role = "kubernetes-default"
     }
 
     #[test]
-    fn rejects_access_policy_with_unknown_role() {
+    fn rejects_github_app_with_unknown_allowed_role() {
         let config: Config = toml::from_str(
             r#"
 [[role]]
@@ -285,16 +257,37 @@ issuer = "https://kubernetes.default.svc"
 name = "default"
 app-id = 42
 secret-key = "private-key.pem"
-
-[[access-policy]]
-github-app = "default"
-role = "buildkite"
+allowed-roles = ["buildkite"]
 "#,
         )
         .unwrap();
 
         let error = config.validate(false).unwrap_err();
         assert_eq!(error.to_string(), "unknown role 'buildkite'");
+    }
+
+    #[test]
+    fn rejects_github_app_without_allowed_roles() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "kubernetes"
+audience = "idcat"
+issuer = "https://kubernetes.default.svc"
+
+[[github-app]]
+name = "default"
+app-id = 42
+secret-key = "private-key.pem"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "github-app 'default' must define at least one allowed-role"
+        );
     }
 
     #[test]
@@ -305,9 +298,6 @@ role = "buildkite"
 name = "default"
 app-id = 42
 secret-key = "private-key.pem"
-
-[[access-policy]]
-github-app = "default"
 "#,
         )
         .unwrap();

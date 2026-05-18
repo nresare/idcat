@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: The idcat contributors
 
-use crate::config::{AccessPolicyConfig, Config, GithubAppConfig, KeySource};
+use crate::config::{Config, GithubAppConfig, KeySource};
 use crate::error::AppError;
 use crate::github::GithubClient;
 use crate::secret::FilePrivateKeyStore;
@@ -12,8 +12,7 @@ use tracing::debug;
 #[derive(Clone)]
 pub struct AppState {
     pub github_apps: Arc<Vec<GithubAppConfig>>,
-    pub access_policies: Arc<Vec<AccessPolicyConfig>>,
-    pub subject_validator: SubjectValidator,
+    pub token_validator: TokenValidator,
     pub github: GithubClient,
     pub key_source: KeySource,
     pub private_key_store: FilePrivateKeyStore,
@@ -30,8 +29,7 @@ pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Res
 
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
-        access_policies: Arc::new(config.access_policies.clone()),
-        subject_validator: SubjectValidator::new(config.roles.clone(), disable_auth)?,
+        token_validator: TokenValidator::new(config.roles.clone(), disable_auth)?,
         github: GithubClient::new()?,
         key_source: config.key_source,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
@@ -49,44 +47,39 @@ impl AppState {
             .ok_or_else(|| AppError::NotFound(format!("unknown github_app '{github_app_name}'")))
     }
 
-    pub fn access_policies(
+    pub fn authorize_github_app(
         &self,
-        github_app_name: &str,
-        repo: &str,
-    ) -> Result<Vec<&AccessPolicyConfig>, AppError> {
+        github_app: &GithubAppConfig,
+        bearer_token: Option<&str>,
+    ) -> Result<(), AppError> {
+        if !self.token_validator.auth_enabled() {
+            debug!(
+                github_app = %github_app.name,
+                "skipping authorization because auth is disabled"
+            );
+            return Ok(());
+        }
+        let bearer_token = bearer_token
+            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
+        let matching_roles = self.token_validator.validate(bearer_token);
         debug!(
-            github_app = %github_app_name,
-            repo = %repo,
-            "searching configured access policies"
+            github_app = %github_app.name,
+            ?matching_roles,
+            allowed_roles = ?github_app.allowed_roles,
+            "matched roles for source token"
         );
-        let access_policies: Vec<_> = self
-            .access_policies
-            .iter()
-            .filter(|access_policy| access_policy.github_app == github_app_name)
-            .collect();
-        if access_policies.is_empty() {
-            return Err(AppError::NotFound(format!(
-                "unknown access-policy for github_app '{github_app_name}'"
+        let authorized = matching_roles.iter().any(|role| {
+            github_app
+                .allowed_roles
+                .iter()
+                .any(|allowed| allowed == role)
+        });
+        if !authorized {
+            return Err(AppError::Unauthorized(format!(
+                "source token did not match any allowed role for github-app '{}'",
+                github_app.name
             )));
         }
-        Ok(access_policies)
-    }
-
-    pub fn authorize_access_policy(
-        &self,
-        github_app_name: &str,
-        repo: &str,
-        claims: &authzoo::ValidatedClaims,
-    ) -> Result<(), AppError> {
-        let subject = claims.subject();
-
-        debug!(
-            github_app = %github_app_name,
-            repo = %repo,
-            subject = %subject,
-            auth_enabled = self.subject_validator.auth_enabled(),
-            "access policy authorization check passed"
-        );
         Ok(())
     }
 
@@ -117,111 +110,94 @@ impl AppState {
 }
 
 #[derive(Clone)]
-pub struct SubjectValidator {
-    mode: SubjectValidationMode,
+pub struct TokenValidator {
+    inner: Option<authzoo::TokenValidator>,
 }
 
-#[derive(Clone)]
-enum SubjectValidationMode {
-    Disabled,
-    Enabled(authzoo::TokenValidator),
-}
-
-impl SubjectValidator {
+impl TokenValidator {
     pub fn new(roles: Vec<authzoo::RoleConfig>, disable_auth: bool) -> anyhow::Result<Self> {
-        let mode = if disable_auth {
-            SubjectValidationMode::Disabled
+        let inner = if disable_auth {
+            None
         } else {
-            SubjectValidationMode::Enabled(authzoo::TokenValidator::new(roles)?)
+            Some(authzoo::TokenValidator::new(roles)?)
         };
-        Ok(Self { mode })
+        Ok(Self { inner })
     }
 
-    pub fn validate(
-        &self,
-        role: Option<&str>,
-        bearer_token: Option<&str>,
-    ) -> Result<authzoo::ValidatedClaims, AppError> {
-        let validator = match &self.mode {
-            SubjectValidationMode::Disabled => {
-                debug!("source token claim validation skipped because auth is disabled");
-                return Ok(unauthenticated_claims());
-            }
-            SubjectValidationMode::Enabled(validator) => {
-                let role = role.ok_or_else(|| {
-                    AppError::Internal("access-policy is missing a role reference".to_string())
-                })?;
-                (validator, role)
-            }
-        };
-        let bearer_token = bearer_token
-            .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
-        debug!(
-            role = %validator.1,
-            "validating source token claims"
-        );
-        let claims = validator
-            .0
-            .validate_claims(validator.1, bearer_token)
-            .map_err(|error| {
-                AppError::Unauthorized(format!("failed to validate source token: {error}"))
-            })?;
-        debug!(subject = %claims.subject(), "source token claims validated");
-        Ok(claims)
+    pub fn validate(&self, bearer_token: &str) -> Vec<String> {
+        match &self.inner {
+            Some(validator) => validator.validate(bearer_token),
+            None => Vec::new(),
+        }
     }
 
     pub fn auth_enabled(&self) -> bool {
-        matches!(self.mode, SubjectValidationMode::Enabled(_))
+        self.inner.is_some()
     }
-}
-
-fn unauthenticated_claims() -> authzoo::ValidatedClaims {
-    serde_json::from_value(serde_json::json!({ "sub": "unauthenticated" }))
-        .expect("static unauthenticated claims must deserialize")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, SubjectValidator};
-    use crate::config::{AccessPolicyConfig, GithubAppConfig, KeySource};
+    use super::{AppState, TokenValidator};
+    use crate::config::{GithubAppConfig, KeySource};
+    use crate::error::AppError;
     use crate::github::GithubClient;
     use crate::secret::FilePrivateKeyStore;
     use std::sync::Arc;
 
-    #[test]
-    fn access_policies_returns_all_policies_for_github_app() {
-        let state = AppState {
-            github_apps: Arc::new(vec![GithubAppConfig {
-                name: "default".to_string(),
-                app_id: 42,
-                secret_key: "private-key.pem".to_string(),
-            }]),
-            access_policies: Arc::new(vec![
-                AccessPolicyConfig {
-                    github_app: "default".to_string(),
-                    role: Some("buildkite-deploy".to_string()),
-                },
-                AccessPolicyConfig {
-                    github_app: "default".to_string(),
-                    role: Some("kubernetes-deploy".to_string()),
-                },
-                AccessPolicyConfig {
-                    github_app: "release-bot".to_string(),
-                    role: Some("kubernetes-release".to_string()),
-                },
-            ]),
-            subject_validator: SubjectValidator::new(Vec::new(), true).unwrap(),
+    fn test_state(github_apps: Vec<GithubAppConfig>) -> AppState {
+        AppState {
+            github_apps: Arc::new(github_apps),
+            token_validator: TokenValidator::new(Vec::new(), true).unwrap(),
             github: GithubClient::new().unwrap(),
             key_source: KeySource::Local,
             private_key_store: FilePrivateKeyStore::new("/var/run/secrets/idcat"),
             #[cfg(feature = "kms")]
             kms_signers: None,
-        };
+        }
+    }
 
-        let policies = state.access_policies("default", "noa/idcat").unwrap();
+    #[test]
+    fn github_app_returns_matching_config() {
+        let state = test_state(vec![GithubAppConfig {
+            name: "default".to_string(),
+            app_id: 42,
+            secret_key: "private-key.pem".to_string(),
+            allowed_roles: vec!["buildkite-deploy".to_string()],
+        }]);
 
-        assert_eq!(policies.len(), 2);
-        assert_eq!(policies[0].role.as_deref(), Some("buildkite-deploy"));
-        assert_eq!(policies[1].role.as_deref(), Some("kubernetes-deploy"));
+        let github_app = state.github_app("default").unwrap();
+        assert_eq!(
+            github_app.allowed_roles,
+            vec!["buildkite-deploy".to_string()]
+        );
+    }
+
+    #[test]
+    fn authorize_github_app_passes_when_auth_disabled() {
+        let state = test_state(vec![GithubAppConfig {
+            name: "default".to_string(),
+            app_id: 42,
+            secret_key: "private-key.pem".to_string(),
+            allowed_roles: Vec::new(),
+        }]);
+
+        let github_app = state.github_app("default").unwrap().clone();
+        state.authorize_github_app(&github_app, None).unwrap();
+    }
+
+    #[test]
+    fn authorize_github_app_requires_bearer_token_when_auth_enabled() {
+        let mut state = test_state(vec![GithubAppConfig {
+            name: "default".to_string(),
+            app_id: 42,
+            secret_key: "private-key.pem".to_string(),
+            allowed_roles: vec!["kubernetes-default".to_string()],
+        }]);
+        state.token_validator = TokenValidator::new(Vec::new(), false).unwrap();
+
+        let github_app = state.github_app("default").unwrap().clone();
+        let error = state.authorize_github_app(&github_app, None).unwrap_err();
+        assert!(matches!(error, AppError::Unauthorized(_)));
     }
 }
