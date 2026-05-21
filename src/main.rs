@@ -269,7 +269,7 @@ async fn create_installation_token_for_repo(
     };
     debug!(github_app = %github_app_name, repo = %repo, "selecting GitHub App config");
     let github_app = state.github_app(github_app_name)?;
-    state.authorize_github_app(github_app, bearer_token.as_deref())?;
+    state.authorize_github_app(github_app, repo, bearer_token.as_deref())?;
     debug!(github_app = %github_app_name, repo = %repo, secret_key = %github_app.secret_key, key_source = ?state.key_source, "preparing GitHub App signer");
     let signer = state.signer(&github_app.secret_key)?;
     debug!(github_app = %github_app_name, repo = %repo, "requesting GitHub installation access token");

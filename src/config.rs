@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -18,6 +19,8 @@ pub struct Config {
     pub roles: Vec<authzoo::RoleConfig>,
     #[serde(rename = "github-app", default)]
     pub github_apps: Vec<GithubAppConfig>,
+    #[serde(rename = "installation-policy", default)]
+    pub installation_policies: Vec<InstallationPolicyConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
@@ -36,6 +39,16 @@ pub struct GithubAppConfig {
     pub secret_key: String,
     #[serde(default)]
     pub allowed_roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct InstallationPolicyConfig {
+    pub github_app: String,
+    pub repository: String,
+    pub role: String,
+    #[serde(rename = "required-claims", default)]
+    pub required_claims: BTreeMap<String, authzoo::ClaimRequirement>,
 }
 
 impl Config {
@@ -94,12 +107,6 @@ impl Config {
                 anyhow::bail!("duplicate github-app '{}'", github_app.name);
             }
             if !disable_auth {
-                if github_app.allowed_roles.is_empty() {
-                    anyhow::bail!(
-                        "github-app '{}' must define at least one allowed-role",
-                        github_app.name
-                    );
-                }
                 for role in &github_app.allowed_roles {
                     if role.is_empty() {
                         anyhow::bail!(
@@ -112,8 +119,83 @@ impl Config {
                     .ensure_roles_exist(github_app.allowed_roles.iter().map(String::as_str))?;
             }
         }
+        if !disable_auth {
+            for installation_policy in &self.installation_policies {
+                if installation_policy.github_app.is_empty() {
+                    anyhow::bail!("installation-policy github-app must not be empty");
+                }
+                if !github_apps.contains(&installation_policy.github_app) {
+                    anyhow::bail!(
+                        "installation-policy references unknown github-app '{}'",
+                        installation_policy.github_app
+                    );
+                }
+                if !is_repository_name(&installation_policy.repository) {
+                    anyhow::bail!(
+                        "installation-policy for github-app '{}' must define repository as owner/name",
+                        installation_policy.github_app
+                    );
+                }
+                if installation_policy.role.is_empty() {
+                    anyhow::bail!(
+                        "installation-policy for github-app '{}' repository '{}' must define role",
+                        installation_policy.github_app,
+                        installation_policy.repository
+                    );
+                }
+                role_validator.ensure_roles_exist([installation_policy.role.as_str()])?;
+                if installation_policy.required_claims.is_empty() {
+                    anyhow::bail!(
+                        "installation-policy for github-app '{}' repository '{}' role '{}' must define at least one required-claim",
+                        installation_policy.github_app,
+                        installation_policy.repository,
+                        installation_policy.role
+                    );
+                }
+                let role_claims = &role_validator.roles()[&installation_policy.role].claims;
+                for (claim, requirement) in &installation_policy.required_claims {
+                    if claim.is_empty() {
+                        anyhow::bail!(
+                            "installation-policy for github-app '{}' repository '{}' role '{}' required-claim names must not be empty",
+                            installation_policy.github_app,
+                            installation_policy.repository,
+                            installation_policy.role
+                        );
+                    }
+                    requirement.validate(&installation_policy.role, claim)?;
+                    if role_claims.contains_key(claim) {
+                        anyhow::bail!(
+                            "installation-policy for github-app '{}' repository '{}' role '{}' required-claim '{}' duplicates a role claim",
+                            installation_policy.github_app,
+                            installation_policy.repository,
+                            installation_policy.role,
+                            claim
+                        );
+                    }
+                }
+            }
+            for github_app in &self.github_apps {
+                let has_installation_policy = self
+                    .installation_policies
+                    .iter()
+                    .any(|installation_policy| installation_policy.github_app == github_app.name);
+                if github_app.allowed_roles.is_empty() && !has_installation_policy {
+                    anyhow::bail!(
+                        "github-app '{}' must define at least one allowed-role or installation-policy",
+                        github_app.name
+                    );
+                }
+            }
+        }
         Ok(())
     }
+}
+
+fn is_repository_name(repository: &str) -> bool {
+    let Some((owner, name)) = repository.split_once('/') else {
+        return false;
+    };
+    !owner.is_empty() && !name.is_empty() && !name.contains('/')
 }
 
 fn default_bind_address() -> String {
@@ -245,6 +327,37 @@ algorithms = ["HS256"]
     }
 
     #[test]
+    fn accepts_installation_policy_with_required_claims() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+        assert_eq!(config.installation_policies.len(), 1);
+    }
+
+    #[test]
     fn rejects_github_app_with_unknown_allowed_role() {
         let config: Config = toml::from_str(
             r#"
@@ -286,7 +399,38 @@ secret-key = "private-key.pem"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "github-app 'default' must define at least one allowed-role"
+            "github-app 'default' must define at least one allowed-role or installation-policy"
+        );
+    }
+
+    #[test]
+    fn rejects_installation_policy_without_required_claims() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "installation-policy for github-app 'deployments' repository 'myorg/alfa' role 'github-workflow' must define at least one required-claim"
         );
     }
 

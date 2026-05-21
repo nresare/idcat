@@ -27,6 +27,11 @@ issuer = "https://kubernetes.default.svc"
 [role.claims]
 sub = "system:serviceaccount:release:release-bot"
 
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+
 [[github-app]]
 name = "deployments"
 app-id = 123456
@@ -38,3 +43,19 @@ name = "release-bot"
 app-id = 234567
 secret-key = "release-bot-private-key.pem"
 allowed-roles = ["kubernetes-release-bot"]
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/beta"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/epsilon"

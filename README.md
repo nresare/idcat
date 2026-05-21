@@ -17,16 +17,34 @@ issuer = "https://kubernetes.default.svc"
 [role.claims]
 sub = "system:serviceaccount:default:default"
 
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+
 [[github-app]]
 name = "deployments"
 app-id = 123456
 secret-key = "deployments-private-key.pem"
 allowed-roles = ["kubernetes-default"]
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
 ```
 
 See `idcat.toml.example` for a fuller configuration with multiple roles and GitHub Apps.
 List multiple entries in `allowed-roles` to allow alternative authentication methods or
 role trust requirements for the same GitHub App.
+Use `[[installation-policy]]` to grant a role only for one installed app/repository
+combination, with additional required token claims. For example, a request for
+`deployments` on `myorg/alfa` can require the token to satisfy `github-workflow` and also
+carry `repository = "myorg/gamma"`. App-level `allowed-roles` still grant access to every
+repository installation for that GitHub App.
 
 Mount the private keys as files. For example, in Kubernetes this could be a Secret volume mounted at `private-key-directory`, but `idcat` only reads files from the filesystem.
 
