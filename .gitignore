@@ -1,4 +1,4 @@
 /target/
 /.idea/
-idcat.toml
+/idcat.toml
 __pycache__/
