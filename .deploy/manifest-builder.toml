@@ -1,0 +1,7 @@
+[[website]]
+name = "idcat.noa.re"
+namespace = "idcat"
+replicas = 2
+args = ["--debug"]
+external-secrets = ["/app-keys"]
+config = { "/config/idcat.toml" = "idcat.toml" }

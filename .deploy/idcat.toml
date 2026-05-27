@@ -1,0 +1,26 @@
+bind-address = "0.0.0.0:8080"
+private-key-directory = "/app-keys"
+
+[[role]]
+name = "buildkite"
+audience = "idcat.noa.re"
+issuer = "https://agent.buildkite.com"
+claims = {organization_slug="nresare", pipeline_slug="berries-config"}
+
+[[role]]
+name = "relcoord"
+audience = "idcat.noa.re"
+issuer = "https://k8s.noa.re"
+claims = {sub="system:serviceaccount:relcoord:default"}
+
+[[role]]
+name = "manual"
+audience = "idcat.noa.re"
+issuer = "https://k8s.noa.re"
+claims = {sub="system:serviceaccount:default:default"}
+
+[[github-app]]
+name = "nresare-buildsystem"
+allowed-roles = ["buildkite", "relcoord", "manual"]
+app-id = 3511383
+secret-key = "nresare-buildsystem.key"

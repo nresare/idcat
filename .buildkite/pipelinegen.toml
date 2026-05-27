@@ -1,1 +1,3 @@
-variant = "rust-container"
+variant = "rust"
+output = "container"
+relcoord-endpoint = "https://relcoord.noa.re"
