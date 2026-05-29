@@ -49,6 +49,8 @@ pub struct InstallationPolicyConfig {
     pub role: String,
     #[serde(rename = "required-claims", default)]
     pub required_claims: BTreeMap<String, authzoo::ClaimRequirement>,
+    #[serde(default)]
+    pub allow_self_access: bool,
 }
 
 impl Config {
@@ -130,9 +132,9 @@ impl Config {
                         installation_policy.github_app
                     );
                 }
-                if !is_repository_name(&installation_policy.repository) {
+                if !is_valid_repo_pattern(&installation_policy.repository) {
                     anyhow::bail!(
-                        "installation-policy for github-app '{}' must define repository as owner/name",
+                        "installation-policy for github-app '{}' must define repository as owner/name or a glob like 'owner/*' or '*'",
                         installation_policy.github_app
                     );
                 }
@@ -144,9 +146,11 @@ impl Config {
                     );
                 }
                 role_validator.ensure_roles_exist([installation_policy.role.as_str()])?;
-                if installation_policy.required_claims.is_empty() {
+                if installation_policy.required_claims.is_empty()
+                    && !installation_policy.allow_self_access
+                {
                     anyhow::bail!(
-                        "installation-policy for github-app '{}' repository '{}' role '{}' must define at least one required-claim",
+                        "installation-policy for github-app '{}' repository '{}' role '{}' must define at least one required-claim (or set allow-self-access)",
                         installation_policy.github_app,
                         installation_policy.repository,
                         installation_policy.role
@@ -173,6 +177,28 @@ impl Config {
                         );
                     }
                 }
+                if installation_policy.allow_self_access {
+                    if installation_policy
+                        .required_claims
+                        .contains_key("repository")
+                    {
+                        anyhow::bail!(
+                            "installation-policy for github-app '{}' repository '{}' role '{}' sets allow-self-access; required-claims must not also define 'repository' (allow-self-access already constrains it to the requested repo)",
+                            installation_policy.github_app,
+                            installation_policy.repository,
+                            installation_policy.role
+                        );
+                    }
+                    if role_claims.contains_key("repository") {
+                        anyhow::bail!(
+                            "installation-policy for github-app '{}' repository '{}' role '{}' sets allow-self-access, but role '{}' already constrains the 'repository' claim",
+                            installation_policy.github_app,
+                            installation_policy.repository,
+                            installation_policy.role,
+                            installation_policy.role
+                        );
+                    }
+                }
             }
             for github_app in &self.github_apps {
                 let has_installation_policy = self
@@ -191,11 +217,20 @@ impl Config {
     }
 }
 
-fn is_repository_name(repository: &str) -> bool {
-    let Some((owner, name)) = repository.split_once('/') else {
+fn is_valid_repo_pattern(pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern == "*" {
+        return true;
+    }
+    let Some((owner, name)) = pattern.split_once('/') else {
         return false;
     };
-    !owner.is_empty() && !name.is_empty() && !name.contains('/')
+    if name.contains('/') {
+        return false;
+    }
+    !owner.is_empty() && !name.is_empty()
 }
 
 fn default_bind_address() -> String {
@@ -209,6 +244,232 @@ fn default_private_key_directory() -> String {
 #[cfg(test)]
 mod tests {
     use super::{Config, KeySource};
+
+    #[test]
+    fn accepts_wildcard_repository_without_allow_self_access() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/*"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+environment = "production"
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+    }
+
+    #[test]
+    fn accepts_wildcard_repository_with_allow_self_access() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/*"
+role = "github-workflow"
+allow-self-access = true
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+    }
+
+    #[test]
+    fn accepts_bare_star_wildcard_with_allow_self_access() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "*"
+role = "github-workflow"
+allow-self-access = true
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+    }
+
+    #[test]
+    fn parses_installation_policy_with_allow_self_access() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+allow-self-access = true
+"#,
+        )
+        .unwrap();
+
+        let policy = &config.installation_policies[0];
+        assert!(policy.allow_self_access);
+        assert!(policy.required_claims.is_empty());
+    }
+
+    #[test]
+    fn rejects_allow_self_access_with_explicit_repository_required_claim() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/*"
+role = "github-workflow"
+allow-self-access = true
+
+[installation-policy.required-claims]
+repository = "myorg/alfa"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(false).unwrap_err().to_string();
+        assert!(
+            error.contains("allow-self-access"),
+            "expected allow-self-access conflict error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn required_claims_accepts_any_of_list_form() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = ["myorg/alfa", "myorg/bravo"]
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+
+        let policy = &config.installation_policies[0];
+        match policy.required_claims.get("repository") {
+            Some(authzoo::ClaimRequirement::AnyOf(values)) => {
+                assert_eq!(
+                    values,
+                    &vec!["myorg/alfa".to_string(), "myorg/bravo".to_string()]
+                );
+            }
+            other => panic!("expected ClaimRequirement::AnyOf([..]), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_installation_policy_with_malformed_repository_pattern() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "owner-only-no-slash"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(false).unwrap_err().to_string();
+        assert!(
+            error.contains("owner/name"),
+            "expected owner/name error, got: {error}"
+        );
+    }
 
     #[test]
     fn parses_minimal_config() {
@@ -430,7 +691,7 @@ role = "github-workflow"
         let error = config.validate(false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "installation-policy for github-app 'deployments' repository 'myorg/alfa' role 'github-workflow' must define at least one required-claim"
+            "installation-policy for github-app 'deployments' repository 'myorg/alfa' role 'github-workflow' must define at least one required-claim (or set allow-self-access)"
         );
     }
 
