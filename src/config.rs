@@ -3,8 +3,28 @@
 
 use anyhow::Context;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::sync::LazyLock;
+use tracing::warn;
+
+#[derive(Debug, Deserialize)]
+struct KnownPermissionsFile {
+    #[serde(default)]
+    permissions: Vec<String>,
+}
+
+static KNOWN_GITHUB_PERMISSIONS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let file: KnownPermissionsFile = toml::from_str(include_str!("github-permissions.toml"))
+        .expect("embedded github-permissions.toml must be valid TOML");
+    file.permissions.into_iter().collect()
+});
+
+const KNOWN_PERMISSION_VALUES: [&str; 3] = ["read", "write", "admin"];
+
+fn known_github_permissions() -> &'static HashSet<String> {
+    &KNOWN_GITHUB_PERMISSIONS
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,6 +71,9 @@ pub struct InstallationPolicyConfig {
     pub required_claims: BTreeMap<String, authzoo::ClaimRequirement>,
     #[serde(default)]
     pub allow_self_access: bool,
+    // Keys are GitHub permission names (snake_case), not kebab-case.
+    #[serde(default)]
+    pub permissions: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -196,6 +219,27 @@ impl Config {
                             installation_policy.repository,
                             installation_policy.role,
                             installation_policy.role
+                        );
+                    }
+                }
+                for (name, value) in &installation_policy.permissions {
+                    if !known_github_permissions().contains(name.as_str()) {
+                        warn!(
+                            github_app = %installation_policy.github_app,
+                            repository = %installation_policy.repository,
+                            role = %installation_policy.role,
+                            permission = %name,
+                            "permission '{name}' is not a recognised GitHub permission. If this is intended, consider updating the permissions list."
+                        );
+                    }
+                    if !KNOWN_PERMISSION_VALUES.contains(&value.as_str()) {
+                        warn!(
+                            github_app = %installation_policy.github_app,
+                            repository = %installation_policy.repository,
+                            role = %installation_policy.role,
+                            permission = %name,
+                            value = %value,
+                            "'{value}' is not a recognised access level (expected read, write or admin) for permission '{name}'. If this is intended, it will still be forwarded to GitHub."
                         );
                     }
                 }
@@ -469,6 +513,135 @@ repository = "myorg/gamma"
             error.contains("owner/name"),
             "expected owner/name error, got: {error}"
         );
+    }
+
+    #[test]
+    fn known_github_permissions_parses_data_file_ignoring_comments_and_blanks() {
+        let perms = super::known_github_permissions();
+        assert!(perms.contains("contents"), "expected repo-level 'contents'");
+        assert!(
+            perms.contains("pull_requests"),
+            "expected repo-level 'pull_requests'"
+        );
+        assert!(
+            perms.contains("organization_administration"),
+            "expected org-level permission"
+        );
+        assert!(
+            !perms.contains("definitely_not_a_real_permission"),
+            "made-up permission must be absent"
+        );
+        assert!(
+            !perms.iter().any(|p| p.is_empty() || p.starts_with('#')),
+            "comments and blank lines must not become entries"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_unknown_permission_name_and_value_without_error() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+
+[installation-policy.permissions]
+made_up_permission = "sideways"
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+    }
+
+    #[test]
+    fn parses_installation_policy_with_permissions() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/*"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+
+[installation-policy.permissions]
+contents = "read"
+pull_requests = "write"
+"#,
+        )
+        .unwrap();
+
+        config.validate(false).unwrap();
+        let policy = &config.installation_policies[0];
+        assert_eq!(
+            policy.permissions.get("contents").map(String::as_str),
+            Some("read")
+        );
+        assert_eq!(
+            policy.permissions.get("pull_requests").map(String::as_str),
+            Some("write")
+        );
+    }
+
+    #[test]
+    fn installation_policy_permissions_default_empty_when_absent() {
+        let config: Config = toml::from_str(
+            r#"
+[[role]]
+name = "github-workflow"
+audience = "idcat"
+issuer = "https://token.actions.githubusercontent.com"
+validation-key = "shared-secret"
+algorithms = ["HS256"]
+
+[[github-app]]
+name = "deployments"
+app-id = 42
+secret-key = "private-key.pem"
+
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/alfa"
+role = "github-workflow"
+
+[installation-policy.required-claims]
+repository = "myorg/gamma"
+"#,
+        )
+        .unwrap();
+
+        let policy = &config.installation_policies[0];
+        assert!(policy.permissions.is_empty());
     }
 
     #[test]

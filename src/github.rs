@@ -51,20 +51,25 @@ struct CachedInstallationToken {
 struct CreateInstallationTokenRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     repositories: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<BTreeMap<String, String>>,
 }
 
 fn build_create_installation_token_request(
-    scope: crate::service::TokenScope,
+    scope: &crate::service::TokenScope,
     repo: &str,
 ) -> CreateInstallationTokenRequest {
-    match scope {
-        crate::service::TokenScope::Broad => CreateInstallationTokenRequest { repositories: None },
-        crate::service::TokenScope::NarrowToRequest => {
+    use crate::service::RepoScope;
+    let repositories = match scope.repositories {
+        RepoScope::All => None,
+        RepoScope::OnlyRequested => {
             let repo_name = repo.split_once('/').map(|(_, name)| name).unwrap_or(repo);
-            CreateInstallationTokenRequest {
-                repositories: Some(vec![repo_name.to_string()]),
-            }
+            Some(vec![repo_name.to_string()])
         }
+    };
+    CreateInstallationTokenRequest {
+        repositories,
+        permissions: (!scope.permissions.is_empty()).then(|| scope.permissions.clone()),
     }
 }
 
@@ -152,7 +157,7 @@ impl GithubClient {
             installation_id,
             "resolved GitHub App installation id"
         );
-        let request = build_create_installation_token_request(scope, repo);
+        let request = build_create_installation_token_request(&token_cache_key.scope, repo);
         debug!(
             github_app = %github_app.name,
             repo = %repo,
@@ -369,8 +374,9 @@ fn should_forward_header(name: &HeaderName) -> bool {
 mod tests {
     use super::{GithubClient, build_create_installation_token_request};
     use crate::config::GithubAppConfig;
-    use crate::service::TokenScope;
+    use crate::service::{RepoScope, TokenScope};
     use crate::signer::Signer;
+    use std::collections::BTreeMap;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -431,6 +437,23 @@ mod tests {
         }
     }
 
+    fn broad_scope() -> TokenScope {
+        TokenScope {
+            repositories: RepoScope::All,
+            permissions: BTreeMap::new(),
+        }
+    }
+
+    fn narrow_scope(permissions: &[(&str, &str)]) -> TokenScope {
+        TokenScope {
+            repositories: RepoScope::OnlyRequested,
+            permissions: permissions
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
     #[tokio::test]
     async fn narrow_caller_is_not_served_a_cached_broad_token() {
         let (api_url, mint_count) = spawn_stub_github_api().await;
@@ -440,19 +463,14 @@ mod tests {
 
         // A broad-scoped caller mints and caches a token for the repo first.
         let broad = client
-            .create_installation_token(&github_app, &StubSigner, "myorg/alfa", TokenScope::Broad)
+            .create_installation_token(&github_app, &StubSigner, "myorg/alfa", broad_scope())
             .await
             .unwrap();
-        // A caller authorized only for NarrowToRequest then asks for the same
+        // A caller authorized only for the requested repo then asks for the same
         // repo. It must get its own freshly-minted, repo-scoped token — not the
         // cached broad token covering the whole installation.
         let narrow = client
-            .create_installation_token(
-                &github_app,
-                &StubSigner,
-                "myorg/alfa",
-                TokenScope::NarrowToRequest,
-            )
+            .create_installation_token(&github_app, &StubSigner, "myorg/alfa", narrow_scope(&[]))
             .await
             .unwrap();
 
@@ -467,18 +485,70 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn caller_is_not_served_a_cached_token_with_different_permissions() {
+        let (api_url, mint_count) = spawn_stub_github_api().await;
+        let mut client = GithubClient::new().unwrap();
+        client.api_url = api_url;
+        let github_app = test_github_app();
+
+        // A read-only caller mints and caches a token for the repo.
+        let read = client
+            .create_installation_token(
+                &github_app,
+                &StubSigner,
+                "myorg/alfa",
+                narrow_scope(&[("contents", "read")]),
+            )
+            .await
+            .unwrap();
+        // A caller authorized for write to the same repo must get its own
+        // freshly-minted token — never the cached read-only one.
+        let write = client
+            .create_installation_token(
+                &github_app,
+                &StubSigner,
+                "myorg/alfa",
+                narrow_scope(&[("contents", "write")]),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            read.token, write.token,
+            "write caller received the cached read-only token"
+        );
+        assert_eq!(
+            mint_count.load(Ordering::SeqCst),
+            2,
+            "each permission set must mint its own token rather than share a cache entry"
+        );
+    }
+
     #[test]
     fn build_create_installation_token_request_broad_omits_repositories() {
-        let request = build_create_installation_token_request(TokenScope::Broad, "myorg/alfa");
+        let request = build_create_installation_token_request(&broad_scope(), "myorg/alfa");
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json, serde_json::json!({}));
     }
 
     #[test]
     fn build_create_installation_token_request_narrow_sets_repository_by_name() {
-        let request =
-            build_create_installation_token_request(TokenScope::NarrowToRequest, "myorg/alfa");
+        let request = build_create_installation_token_request(&narrow_scope(&[]), "myorg/alfa");
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json, serde_json::json!({ "repositories": ["alfa"] }));
+    }
+
+    #[test]
+    fn build_create_installation_token_request_narrow_includes_permissions() {
+        let request = build_create_installation_token_request(
+            &narrow_scope(&[("contents", "read")]),
+            "myorg/alfa",
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "repositories": ["alfa"], "permissions": { "contents": "read" } })
+        );
     }
 }

@@ -11,9 +11,24 @@ use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
-pub enum TokenScope {
-    Broad,
-    NarrowToRequest,
+pub enum RepoScope {
+    OnlyRequested,
+    All,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TokenScope {
+    pub repositories: RepoScope,
+    pub permissions: BTreeMap<String, String>,
+}
+
+impl TokenScope {
+    fn broad() -> Self {
+        Self {
+            repositories: RepoScope::All,
+            permissions: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -68,7 +83,7 @@ impl AppState {
                 repo = %repo,
                 "skipping authorization because auth is disabled"
             );
-            return Ok(TokenScope::Broad);
+            return Ok(TokenScope::broad());
         }
         let bearer_token = bearer_token
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
@@ -87,12 +102,12 @@ impl AppState {
                 .any(|allowed| allowed == role)
         });
         if allowed_role_match {
-            return Ok(TokenScope::Broad);
+            return Ok(TokenScope::broad());
         }
         let installation_policy_match =
             self.installation_policies
                 .iter()
-                .any(|installation_policy| {
+                .find(|installation_policy| {
                     installation_policy.github_app == github_app.name
                         && wildmatch::WildMatch::new(&installation_policy.repository).matches(repo)
                         && self.token_validator.validate_role_with_claims(
@@ -101,8 +116,11 @@ impl AppState {
                             bearer_token,
                         )
                 });
-        if installation_policy_match {
-            return Ok(TokenScope::NarrowToRequest);
+        if let Some(installation_policy) = installation_policy_match {
+            return Ok(TokenScope {
+                repositories: RepoScope::OnlyRequested,
+                permissions: installation_policy.permissions.clone(),
+            });
         }
         Err(AppError::Unauthorized(format!(
             "source token did not match any allowed role for github-app '{}' and repository '{}'",
@@ -203,7 +221,7 @@ impl TokenValidator {
 
 #[cfg(test)]
 mod tests {
-    use super::TokenScope;
+    use super::RepoScope;
     use super::{AppState, TokenValidator};
     use crate::config::{GithubAppConfig, InstallationPolicyConfig, KeySource};
     use crate::error::AppError;
@@ -337,6 +355,7 @@ mod tests {
                 role: "github-workflow".to_string(),
                 required_claims,
                 allow_self_access: false,
+                permissions: BTreeMap::new(),
             }],
         );
         state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
@@ -368,6 +387,7 @@ mod tests {
                 role: "github-workflow".to_string(),
                 required_claims,
                 allow_self_access: false,
+                permissions: BTreeMap::new(),
             }],
         );
         state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
@@ -395,7 +415,8 @@ mod tests {
         let scope = state
             .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
             .unwrap();
-        assert_eq!(scope, TokenScope::Broad);
+        assert_eq!(scope.repositories, RepoScope::All);
+        assert!(scope.permissions.is_empty());
     }
 
     #[test]
@@ -416,7 +437,37 @@ mod tests {
         let scope = state
             .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
             .unwrap();
-        assert_eq!(scope, TokenScope::NarrowToRequest);
+        assert_eq!(scope.repositories, RepoScope::OnlyRequested);
+        assert!(scope.permissions.is_empty());
+    }
+
+    #[test]
+    fn authorize_github_app_threads_permissions_from_installation_policy() {
+        let mut policy = workflow_self_scoping_policy();
+        policy
+            .permissions
+            .insert("contents".to_string(), "read".to_string());
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![policy],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/alfa");
+        let github_app = state.github_app("default").unwrap().clone();
+        let scope = state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap();
+        assert_eq!(scope.repositories, RepoScope::OnlyRequested);
+        assert_eq!(
+            scope.permissions.get("contents").map(String::as_str),
+            Some("read")
+        );
     }
 
     fn workflow_self_scoping_policy() -> InstallationPolicyConfig {
@@ -426,6 +477,7 @@ mod tests {
             role: "github-workflow".to_string(),
             required_claims: BTreeMap::new(),
             allow_self_access: true,
+            permissions: BTreeMap::new(),
         }
     }
 
