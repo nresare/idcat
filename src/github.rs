@@ -38,6 +38,7 @@ struct GithubCache {
 struct InstallationTokenCacheKey {
     github_app: String,
     repo: String,
+    scope: crate::service::TokenScope,
 }
 
 #[derive(Clone)]
@@ -47,9 +48,24 @@ struct CachedInstallationToken {
 }
 
 #[derive(Debug, Serialize)]
-struct CreateInstallationTokenRequest<'a> {
+struct CreateInstallationTokenRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    repository_ids: Option<&'a [u64]>,
+    repositories: Option<Vec<String>>,
+}
+
+fn build_create_installation_token_request(
+    scope: crate::service::TokenScope,
+    repo: &str,
+) -> CreateInstallationTokenRequest {
+    match scope {
+        crate::service::TokenScope::Broad => CreateInstallationTokenRequest { repositories: None },
+        crate::service::TokenScope::NarrowToRequest => {
+            let repo_name = repo.split_once('/').map(|(_, name)| name).unwrap_or(repo);
+            CreateInstallationTokenRequest {
+                repositories: Some(vec![repo_name.to_string()]),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,10 +111,12 @@ impl GithubClient {
         github_app: &GithubAppConfig,
         signer: &dyn Signer,
         repo: &str,
+        scope: crate::service::TokenScope,
     ) -> anyhow::Result<InstallationTokenResponse> {
         let token_cache_key = InstallationTokenCacheKey {
             github_app: github_app.name.clone(),
             repo: repo.to_string(),
+            scope,
         };
         if let Some(token) = self.cached_installation_token(&token_cache_key).await {
             debug!(
@@ -134,9 +152,7 @@ impl GithubClient {
             installation_id,
             "resolved GitHub App installation id"
         );
-        let request = CreateInstallationTokenRequest {
-            repository_ids: None,
-        };
+        let request = build_create_installation_token_request(scope, repo);
         debug!(
             github_app = %github_app.name,
             repo = %repo,
@@ -347,4 +363,122 @@ fn should_forward_header(name: &HeaderName) -> bool {
             | &reqwest::header::TRANSFER_ENCODING
             | &reqwest::header::UPGRADE
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GithubClient, build_create_installation_token_request};
+    use crate::config::GithubAppConfig;
+    use crate::service::TokenScope;
+    use crate::signer::Signer;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct StubSigner;
+
+    impl Signer for StubSigner {
+        fn sign<'a>(
+            &'a self,
+            _message: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async { Ok(vec![1, 2, 3]) })
+        }
+    }
+
+    /// Stub GitHub API that resolves a fixed installation id and mints a
+    /// uniquely-numbered token on each POST, returning the running mint count
+    /// so a cache hit (which skips the POST) is observable from the test.
+    async fn spawn_stub_github_api() -> (String, Arc<AtomicUsize>) {
+        use axum::Json;
+        use axum::routing::{get, post};
+
+        let mint_count = Arc::new(AtomicUsize::new(0));
+        let mint_count_for_handler = mint_count.clone();
+        let app = axum::Router::new()
+            .route(
+                "/repos/{owner}/{repo}/installation",
+                get(|| async { Json(serde_json::json!({ "id": 123 })) }),
+            )
+            .route(
+                "/app/installations/{id}/access_tokens",
+                post(move || {
+                    let mint_count = mint_count_for_handler.clone();
+                    async move {
+                        let n = mint_count.fetch_add(1, Ordering::SeqCst) + 1;
+                        Json(serde_json::json!({
+                            "token": format!("ghs_token_{n}"),
+                            "expires_at": "2099-01-01T00:00:00Z",
+                        }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), mint_count)
+    }
+
+    fn test_github_app() -> GithubAppConfig {
+        GithubAppConfig {
+            name: "default".to_string(),
+            app_id: 42,
+            secret_key: "private-key.pem".to_string(),
+            allowed_roles: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn narrow_caller_is_not_served_a_cached_broad_token() {
+        let (api_url, mint_count) = spawn_stub_github_api().await;
+        let mut client = GithubClient::new().unwrap();
+        client.api_url = api_url;
+        let github_app = test_github_app();
+
+        // A broad-scoped caller mints and caches a token for the repo first.
+        let broad = client
+            .create_installation_token(&github_app, &StubSigner, "myorg/alfa", TokenScope::Broad)
+            .await
+            .unwrap();
+        // A caller authorized only for NarrowToRequest then asks for the same
+        // repo. It must get its own freshly-minted, repo-scoped token — not the
+        // cached broad token covering the whole installation.
+        let narrow = client
+            .create_installation_token(
+                &github_app,
+                &StubSigner,
+                "myorg/alfa",
+                TokenScope::NarrowToRequest,
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            broad.token, narrow.token,
+            "narrow caller received the cached broad-scoped token"
+        );
+        assert_eq!(
+            mint_count.load(Ordering::SeqCst),
+            2,
+            "each scope must mint its own token rather than share a cache entry"
+        );
+    }
+
+    #[test]
+    fn build_create_installation_token_request_broad_omits_repositories() {
+        let request = build_create_installation_token_request(TokenScope::Broad, "myorg/alfa");
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn build_create_installation_token_request_narrow_sets_repository_by_name() {
+        let request =
+            build_create_installation_token_request(TokenScope::NarrowToRequest, "myorg/alfa");
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json, serde_json::json!({ "repositories": ["alfa"] }));
+    }
 }

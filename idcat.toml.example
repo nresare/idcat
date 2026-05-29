@@ -59,3 +59,20 @@ role = "github-workflow"
 
 [installation-policy.required-claims]
 repository = "myorg/epsilon"
+
+# `repository` accepts a glob where `*` matches any characters (including
+# `/`); so `"myorg/*"` matches any repo under `myorg/`, `"*"` matches any repo
+# at all, and a literal like `"myorg/alfa"` matches exactly that repo.
+#
+# `allow-self-access = true` makes idcat synthesise a `repository`
+# required-claim equal to the `owner/repo` in the request URL, so the JWT
+# must come from a workflow running in the same repo it asks a token for —
+# semantically equivalent to writing `required-claims = { repository = <the
+# URL's owner/repo> }` for every request that arrives. Pair it with a
+# wildcard `repository` to express "any repo in this org, but a caller may
+# only mint a token for its own repo".
+[[installation-policy]]
+github-app = "deployments"
+repository = "myorg/*"
+role = "github-workflow"
+allow-self-access = true

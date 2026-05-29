@@ -10,6 +10,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::debug;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub enum TokenScope {
+    Broad,
+    NarrowToRequest,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub github_apps: Arc<Vec<GithubAppConfig>>,
@@ -55,14 +61,14 @@ impl AppState {
         github_app: &GithubAppConfig,
         repo: &str,
         bearer_token: Option<&str>,
-    ) -> Result<(), AppError> {
+    ) -> Result<TokenScope, AppError> {
         if !self.token_validator.auth_enabled() {
             debug!(
                 github_app = %github_app.name,
                 repo = %repo,
                 "skipping authorization because auth is disabled"
             );
-            return Ok(());
+            return Ok(TokenScope::Broad);
         }
         let bearer_token = bearer_token
             .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
@@ -74,33 +80,34 @@ impl AppState {
             allowed_roles = ?github_app.allowed_roles,
             "matched roles for source token"
         );
-        let mut authorized = matching_roles.iter().any(|role| {
+        let allowed_role_match = matching_roles.iter().any(|role| {
             github_app
                 .allowed_roles
                 .iter()
                 .any(|allowed| allowed == role)
         });
-        if !authorized {
-            authorized = self
-                .installation_policies
+        if allowed_role_match {
+            return Ok(TokenScope::Broad);
+        }
+        let installation_policy_match =
+            self.installation_policies
                 .iter()
                 .any(|installation_policy| {
                     installation_policy.github_app == github_app.name
-                        && installation_policy.repository == repo
+                        && wildmatch::WildMatch::new(&installation_policy.repository).matches(repo)
                         && self.token_validator.validate_role_with_claims(
                             &installation_policy.role,
-                            &installation_policy.required_claims,
+                            &claims_for_request(installation_policy, repo),
                             bearer_token,
                         )
                 });
+        if installation_policy_match {
+            return Ok(TokenScope::NarrowToRequest);
         }
-        if !authorized {
-            return Err(AppError::Unauthorized(format!(
-                "source token did not match any allowed role for github-app '{}' and repository '{}'",
-                github_app.name, repo
-            )));
-        }
-        Ok(())
+        Err(AppError::Unauthorized(format!(
+            "source token did not match any allowed role for github-app '{}' and repository '{}'",
+            github_app.name, repo
+        )))
     }
 
     pub fn signer(&self, secret_key: &str) -> anyhow::Result<Box<dyn Signer>> {
@@ -127,6 +134,20 @@ impl AppState {
             }
         }
     }
+}
+
+fn claims_for_request(
+    installation_policy: &InstallationPolicyConfig,
+    request_repo: &str,
+) -> BTreeMap<String, authzoo::ClaimRequirement> {
+    let mut claims = installation_policy.required_claims.clone();
+    if installation_policy.allow_self_access {
+        claims.insert(
+            "repository".to_string(),
+            authzoo::ClaimRequirement::equals(request_repo),
+        );
+    }
+    claims
 }
 
 #[derive(Clone)]
@@ -182,6 +203,7 @@ impl TokenValidator {
 
 #[cfg(test)]
 mod tests {
+    use super::TokenScope;
     use super::{AppState, TokenValidator};
     use crate::config::{GithubAppConfig, InstallationPolicyConfig, KeySource};
     use crate::error::AppError;
@@ -314,6 +336,7 @@ mod tests {
                 repository: "myorg/alfa".to_string(),
                 role: "github-workflow".to_string(),
                 required_claims,
+                allow_self_access: false,
             }],
         );
         state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
@@ -344,6 +367,7 @@ mod tests {
                 repository: "myorg/alfa".to_string(),
                 role: "github-workflow".to_string(),
                 required_claims,
+                allow_self_access: false,
             }],
         );
         state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
@@ -352,6 +376,118 @@ mod tests {
         let github_app = state.github_app("default").unwrap().clone();
         let error = state
             .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap_err();
+        assert!(matches!(error, AppError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn authorize_github_app_returns_broad_when_matched_via_allowed_roles() {
+        let mut state = test_state(vec![GithubAppConfig {
+            name: "default".to_string(),
+            app_id: 42,
+            secret_key: "private-key.pem".to_string(),
+            allowed_roles: vec!["github-workflow".to_string()],
+        }]);
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/anything");
+        let github_app = state.github_app("default").unwrap().clone();
+        let scope = state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap();
+        assert_eq!(scope, TokenScope::Broad);
+    }
+
+    #[test]
+    fn authorize_github_app_returns_narrow_when_matched_via_installation_policy() {
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![workflow_self_scoping_policy()],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/alfa");
+        let github_app = state.github_app("default").unwrap().clone();
+        let scope = state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap();
+        assert_eq!(scope, TokenScope::NarrowToRequest);
+    }
+
+    fn workflow_self_scoping_policy() -> InstallationPolicyConfig {
+        InstallationPolicyConfig {
+            github_app: "default".to_string(),
+            repository: "myorg/*".to_string(),
+            role: "github-workflow".to_string(),
+            required_claims: BTreeMap::new(),
+            allow_self_access: true,
+        }
+    }
+
+    #[test]
+    fn authorize_github_app_accepts_workflow_self_scoping_when_claim_matches_request_repo() {
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![workflow_self_scoping_policy()],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/alfa");
+        let github_app = state.github_app("default").unwrap().clone();
+        state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap();
+    }
+
+    #[test]
+    fn authorize_github_app_rejects_workflow_self_scoping_when_claim_disagrees_with_request_repo() {
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![workflow_self_scoping_policy()],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/beta");
+        let github_app = state.github_app("default").unwrap().clone();
+        let error = state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap_err();
+        assert!(matches!(error, AppError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn authorize_github_app_rejects_workflow_self_scoping_when_request_repo_does_not_match_pattern()
+    {
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![workflow_self_scoping_policy()],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("evilorg/alfa");
+        let github_app = state.github_app("default").unwrap().clone();
+        let error = state
+            .authorize_github_app(&github_app, "evilorg/alfa", Some(&token))
             .unwrap_err();
         assert!(matches!(error, AppError::Unauthorized(_)));
     }
