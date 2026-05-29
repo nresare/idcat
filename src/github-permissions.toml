@@ -1,0 +1,69 @@
+# Soft allowlist of GitHub App permission names for the `permissions` table on
+# `[[installation-policy]]`. A name absent from this file still works; it only
+# triggers a startup warning. Names are snake_case, as GitHub expects them.
+# Grouped by level in comments for readability; idcat treats it as one flat set.
+
+permissions = [
+    # Repository-level
+    "actions",
+    "administration",
+    "artifact_metadata",
+    "attestations",
+    "checks",
+    "code_quality",
+    "codespaces",
+    "contents",
+    "dependabot_secrets",
+    "deployments",
+    "discussions",
+    "environments",
+    "interaction_limits",
+    "issues",
+    "merge_queues",
+    "metadata",
+    "packages",
+    "pages",
+    "pull_requests",
+    "repository_custom_properties",
+    "repository_hooks",
+    "repository_projects",
+    "secret_scanning_alerts",
+    "secrets",
+    "security_events",
+    "single_file",
+    "statuses",
+    "vulnerability_alerts",
+    "workflows",
+
+    # Organization-level
+    "custom_properties_for_organizations",
+    "members",
+    "organization_administration",
+    "organization_announcement_banners",
+    "organization_copilot_agent_settings",
+    "organization_copilot_seat_management",
+    "organization_custom_org_roles",
+    "organization_custom_properties",
+    "organization_custom_roles",
+    "organization_events",
+    "organization_hooks",
+    "organization_packages",
+    "organization_personal_access_token_requests",
+    "organization_personal_access_tokens",
+    "organization_plan",
+    "organization_projects",
+    "organization_secrets",
+    "organization_self_hosted_runners",
+    "organization_user_blocking",
+
+    # User-level
+    "email_addresses",
+    "followers",
+    "git_ssh_keys",
+    "gpg_keys",
+    "profile",
+    "starring",
+
+    # Enterprise-level
+    "enterprise_custom_properties_for_organizations",
+]
