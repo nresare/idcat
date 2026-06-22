@@ -54,15 +54,16 @@ repository = "myorg/gamma"
 
 [[installation-policy]]
 github-app = "deployments"
-repository = "myorg/beta"
+repositories = ["myorg/beta", "myorg/delta"]
 role = "github-workflow"
 
 [installation-policy.required-claims]
 repository = "myorg/epsilon"
 
-# `repository` accepts a glob where `*` matches any characters (including
-# `/`); so `"myorg/*"` matches any repo under `myorg/`, `"*"` matches any repo
-# at all, and a literal like `"myorg/alfa"` matches exactly that repo.
+# `repository` and each `repositories` entry accepts a glob where `*` matches
+# any characters (including `/`); so `"myorg/*"` matches any repo under
+# `myorg/`, `"*"` matches any repo at all, and a literal like `"myorg/alfa"`
+# matches exactly that repo. Use either `repository` or `repositories`, not both.
 #
 # `allow-self-access = true` makes idcat synthesise a `repository`
 # required-claim equal to the `owner/repo` in the request URL, so the JWT

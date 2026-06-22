@@ -109,7 +109,10 @@ impl AppState {
                 .iter()
                 .find(|installation_policy| {
                     installation_policy.github_app == github_app.name
-                        && wildmatch::WildMatch::new(&installation_policy.repository).matches(repo)
+                        && installation_policy
+                            .repositories
+                            .iter()
+                            .any(|repository| wildmatch::WildMatch::new(repository).matches(repo))
                         && self.token_validator.validate_role_with_claims(
                             &installation_policy.role,
                             &claims_for_request(installation_policy, repo),
@@ -351,7 +354,7 @@ mod tests {
             }],
             vec![InstallationPolicyConfig {
                 github_app: "default".to_string(),
-                repository: "myorg/alfa".to_string(),
+                repositories: vec!["myorg/alfa".to_string()],
                 role: "github-workflow".to_string(),
                 required_claims,
                 allow_self_access: false,
@@ -383,7 +386,7 @@ mod tests {
             }],
             vec![InstallationPolicyConfig {
                 github_app: "default".to_string(),
-                repository: "myorg/alfa".to_string(),
+                repositories: vec!["myorg/alfa".to_string()],
                 role: "github-workflow".to_string(),
                 required_claims,
                 allow_self_access: false,
@@ -442,6 +445,29 @@ mod tests {
     }
 
     #[test]
+    fn authorize_github_app_matches_any_repository_in_installation_policy() {
+        let mut policy = workflow_self_scoping_policy();
+        policy.repositories = vec!["myorg/bravo".to_string(), "myorg/alfa".to_string()];
+        let mut state = test_state_with_installation_policies(
+            vec![GithubAppConfig {
+                name: "default".to_string(),
+                app_id: 42,
+                secret_key: "private-key.pem".to_string(),
+                allowed_roles: Vec::new(),
+            }],
+            vec![policy],
+        );
+        state.token_validator = TokenValidator::new(vec![github_workflow_role()], false).unwrap();
+
+        let token = github_workflow_token("myorg/alfa");
+        let github_app = state.github_app("default").unwrap().clone();
+        let scope = state
+            .authorize_github_app(&github_app, "myorg/alfa", Some(&token))
+            .unwrap();
+        assert_eq!(scope.repositories, RepoScope::OnlyRequested);
+    }
+
+    #[test]
     fn authorize_github_app_threads_permissions_from_installation_policy() {
         let mut policy = workflow_self_scoping_policy();
         policy
@@ -473,7 +499,7 @@ mod tests {
     fn workflow_self_scoping_policy() -> InstallationPolicyConfig {
         InstallationPolicyConfig {
             github_app: "default".to_string(),
-            repository: "myorg/*".to_string(),
+            repositories: vec!["myorg/*".to_string()],
             role: "github-workflow".to_string(),
             required_claims: BTreeMap::new(),
             allow_self_access: true,
