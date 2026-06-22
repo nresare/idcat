@@ -108,8 +108,38 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(bind_address).await?;
     info!(address = %bind_address, "listening");
-    axum::serve(listener, app).await?;
+
+    tokio::select! {
+        result = axum::serve(listener, app) => {
+            result?;
+        }
+        signal = termination_signal() => {
+            let signal = signal?;
+            info!(signal, "caught signal, exiting");
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(unix)]
+async fn termination_signal() -> anyhow::Result<&'static str> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = sigterm.recv() => Ok("SIGTERM"),
+        result = tokio::signal::ctrl_c() => {
+            result?;
+            Ok("SIGINT")
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn termination_signal() -> anyhow::Result<&'static str> {
+    tokio::signal::ctrl_c().await?;
+    Ok("SIGINT")
 }
 
 async fn healthz() -> Json<Value> {
