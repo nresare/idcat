@@ -30,7 +30,7 @@ allowed-roles = ["kubernetes-default"]
 
 [[installation-policy]]
 github-app = "deployments"
-repository = "myorg/alfa"
+repositories = ["myorg/alfa", "myorg/beta"]
 role = "github-workflow"
 
 [installation-policy.required-claims]
@@ -41,8 +41,10 @@ See `idcat.toml.example` for a fuller configuration with multiple roles and GitH
 List multiple entries in `allowed-roles` to allow alternative authentication methods or
 role trust requirements for the same GitHub App.
 Use `[[installation-policy]]` to grant a role only for one installed app/repository
-combination, with additional required token claims. For example, a request for
-`deployments` on `myorg/alfa` can require the token to satisfy `github-workflow` and also
+combination, with additional required token claims. Set either `repository = "owner/name"`
+or `repositories = ["owner/name", "owner/other"]`; the request may match any configured
+repository pattern. For example, a request for `deployments` on `myorg/alfa` can require
+the token to satisfy `github-workflow` and also
 carry `repository = "myorg/gamma"`. App-level `allowed-roles` still grant access to every
 repository installation for that GitHub App.
 
