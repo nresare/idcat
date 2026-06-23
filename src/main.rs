@@ -18,7 +18,7 @@ use crate::github::InstallationTokenResponse;
 use crate::service::{AppState, build_app_state};
 use axum::body::{Body, Bytes};
 use axum::extract::{OriginalUri, Path, State};
-use axum::http::{HeaderMap, HeaderName, Method, Uri, header};
+use axum::http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header};
 use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
@@ -87,6 +87,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/webhook", post(webhook))
         .route(
             "/installation-token/{github_app}/{owner}/{repo}",
             post(installation_token),
@@ -144,6 +145,14 @@ async fn termination_signal() -> anyhow::Result<&'static str> {
 
 async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+async fn webhook(body: Bytes) -> StatusCode {
+    match std::str::from_utf8(&body) {
+        Ok(payload) => info!("github webhook received:\n{payload}"),
+        Err(_) => info!(payload = ?body, "github webhook received non-UTF-8 payload"),
+    }
+    StatusCode::ACCEPTED
 }
 
 async fn installation_token(
@@ -338,4 +347,21 @@ fn should_return_proxy_header(name: &HeaderName) -> bool {
             | &header::TRANSFER_ENCODING
             | &header::UPGRADE
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::webhook;
+    use axum::body::Bytes;
+    use axum::http::StatusCode;
+
+    #[tokio::test]
+    async fn webhook_accepts_github_payload() {
+        let status = webhook(Bytes::from_static(
+            br#"{"zen":"Keep it logically awesome."}"#,
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
 }
