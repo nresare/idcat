@@ -8,6 +8,7 @@ mod jwt;
 #[cfg(feature = "kms")]
 #[allow(dead_code)]
 mod kms;
+mod nats;
 mod secret;
 mod service;
 mod signer;
@@ -27,7 +28,7 @@ use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -147,10 +148,27 @@ async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-async fn webhook(body: Bytes) -> StatusCode {
+async fn webhook(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> StatusCode {
     match std::str::from_utf8(&body) {
         Ok(payload) => info!("github webhook received:\n{payload}"),
         Err(_) => info!(payload = ?body, "github webhook received non-UTF-8 payload"),
+    }
+    if let Some(publisher) = &state.webhook_publisher {
+        let github_event = nats::github_header(&headers, "x-github-event").unwrap_or("unknown");
+        let github_delivery =
+            nats::github_header(&headers, "x-github-delivery").unwrap_or("unknown");
+        match publisher.publish_github_webhook(&headers, body).await {
+            Ok(subject) => info!(
+                github_event,
+                github_delivery, subject, "published github webhook to nats"
+            ),
+            Err(error) => warn!(
+                github_event,
+                github_delivery,
+                error = %error,
+                "failed to publish github webhook to nats"
+            ),
+        }
     }
     StatusCode::ACCEPTED
 }
@@ -352,14 +370,36 @@ fn should_return_proxy_header(name: &HeaderName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::webhook;
+    use crate::config::KeySource;
+    use crate::github::GithubClient;
+    use crate::secret::FilePrivateKeyStore;
+    use crate::service::{AppState, TokenValidator};
     use axum::body::Bytes;
-    use axum::http::StatusCode;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, StatusCode};
+    use std::sync::Arc;
+
+    fn test_state() -> AppState {
+        AppState {
+            github_apps: Arc::new(Vec::new()),
+            installation_policies: Arc::new(Vec::new()),
+            token_validator: TokenValidator::new(Vec::new(), true).unwrap(),
+            github: GithubClient::new().unwrap(),
+            webhook_publisher: None,
+            key_source: KeySource::Local,
+            private_key_store: FilePrivateKeyStore::new("/var/run/secrets/idcat"),
+            #[cfg(feature = "kms")]
+            kms_signers: None,
+        }
+    }
 
     #[tokio::test]
     async fn webhook_accepts_github_payload() {
-        let status = webhook(Bytes::from_static(
-            br#"{"zen":"Keep it logically awesome."}"#,
-        ))
+        let status = webhook(
+            State(test_state()),
+            HeaderMap::new(),
+            Bytes::from_static(br#"{"zen":"Keep it logically awesome."}"#),
+        )
         .await;
 
         assert_eq!(status, StatusCode::ACCEPTED);

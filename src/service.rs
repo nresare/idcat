@@ -4,6 +4,7 @@
 use crate::config::{Config, GithubAppConfig, InstallationPolicyConfig, KeySource};
 use crate::error::AppError;
 use crate::github::GithubClient;
+use crate::nats::WebhookPublisher;
 use crate::secret::FilePrivateKeyStore;
 use crate::signer::{LocalSigner, Signer};
 use std::collections::BTreeMap;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub installation_policies: Arc<Vec<InstallationPolicyConfig>>,
     pub token_validator: TokenValidator,
     pub github: GithubClient,
+    pub webhook_publisher: Option<WebhookPublisher>,
     pub key_source: KeySource,
     pub private_key_store: FilePrivateKeyStore,
     #[cfg(feature = "kms")]
@@ -50,11 +52,19 @@ pub async fn build_app_state(config: &Config, disable_auth: bool) -> anyhow::Res
         KeySource::Kms => Some(crate::kms::KmsSignerFactory::from_env().await),
     };
 
+    let webhook_publisher = match (&config.webhook_target, &config.nats) {
+        (Some(crate::config::WebhookTarget::Nats), Some(nats)) => {
+            Some(WebhookPublisher::connect(nats).await?)
+        }
+        _ => None,
+    };
+
     Ok(AppState {
         github_apps: Arc::new(config.github_apps.clone()),
         installation_policies: Arc::new(config.installation_policies.clone()),
         token_validator: TokenValidator::new(config.roles.clone(), disable_auth)?,
         github: GithubClient::new()?,
+        webhook_publisher,
         key_source: config.key_source,
         private_key_store: FilePrivateKeyStore::new(&config.private_key_directory),
         #[cfg(feature = "kms")]
@@ -248,6 +258,7 @@ mod tests {
             installation_policies: Arc::new(installation_policies),
             token_validator: TokenValidator::new(Vec::new(), true).unwrap(),
             github: GithubClient::new().unwrap(),
+            webhook_publisher: None,
             key_source: KeySource::Local,
             private_key_store: FilePrivateKeyStore::new("/var/run/secrets/idcat"),
             #[cfg(feature = "kms")]

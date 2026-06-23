@@ -35,6 +35,8 @@ pub struct Config {
     pub key_source: KeySource,
     #[serde(default = "default_private_key_directory")]
     pub private_key_directory: String,
+    pub webhook_target: Option<WebhookTarget>,
+    pub nats: Option<NatsConfig>,
     #[serde(rename = "role", default)]
     pub roles: Vec<authzoo::RoleConfig>,
     #[serde(rename = "github-app", default)]
@@ -49,6 +51,20 @@ pub enum KeySource {
     #[default]
     Local,
     Kms,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WebhookTarget {
+    Nats,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct NatsConfig {
+    pub endpoint: String,
+    pub subject_base: String,
+    pub token_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +158,28 @@ impl Config {
         }
         if self.key_source == KeySource::Kms && !cfg!(feature = "kms") {
             anyhow::bail!("key-source 'kms' requires idcat to be built with the 'kms' feature");
+        }
+        if matches!(self.webhook_target, Some(WebhookTarget::Nats)) && self.nats.is_none() {
+            anyhow::bail!("webhook-target 'nats' requires a [nats] config block");
+        }
+        if let Some(nats) = &self.nats {
+            if nats.endpoint.is_empty() {
+                anyhow::bail!("nats endpoint must not be empty");
+            }
+            if nats.subject_base.is_empty() {
+                anyhow::bail!("nats subject-base must not be empty");
+            }
+            if nats.subject_base.chars().any(char::is_whitespace) {
+                anyhow::bail!("nats subject-base must not contain whitespace");
+            }
+            if matches!(nats.token_path.as_deref(), Some("")) {
+                anyhow::bail!("nats token-path must not be empty when set");
+            }
+            if self.webhook_target.is_none() {
+                warn!(
+                    "nats config is present but webhook-target is not set; nats will not be used"
+                );
+            }
         }
         let role_validator = authzoo::TokenValidator::new(self.roles.clone())?;
         if !disable_auth && self.roles.is_empty() {
@@ -344,7 +382,7 @@ fn default_private_key_directory() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, KeySource};
+    use super::{Config, KeySource, WebhookTarget};
 
     #[test]
     fn accepts_wildcard_repository_without_allow_self_access() {
@@ -873,6 +911,82 @@ sub = "system:serviceaccount:idelephant:default"
         assert_eq!(config.bind_address, "0.0.0.0:8080");
         assert_eq!(config.key_source, KeySource::Local);
         assert_eq!(config.private_key_directory, "/var/run/secrets/idcat");
+        assert_eq!(config.webhook_target, None);
+        assert_eq!(config.nats, None);
+    }
+
+    #[test]
+    fn parses_nats_webhook_target_config() {
+        let config: Config = toml::from_str(
+            r#"
+webhook-target = "nats"
+
+[nats]
+endpoint = "nats://nats.example.com:4222"
+subject-base = "idcat.github.webhook"
+token-path = "/var/run/secrets/idcat/nats-token"
+
+[[github-app]]
+name = "default"
+app-id = 42
+secret-key = "private-key.pem"
+"#,
+        )
+        .unwrap();
+
+        config.validate(true).unwrap();
+        assert_eq!(config.webhook_target, Some(WebhookTarget::Nats));
+        let nats = config.nats.as_ref().unwrap();
+        assert_eq!(nats.endpoint, "nats://nats.example.com:4222");
+        assert_eq!(nats.subject_base, "idcat.github.webhook");
+        assert_eq!(
+            nats.token_path.as_deref(),
+            Some("/var/run/secrets/idcat/nats-token")
+        );
+    }
+
+    #[test]
+    fn rejects_nats_webhook_target_without_nats_config() {
+        let config: Config = toml::from_str(
+            r#"
+webhook-target = "nats"
+
+[[github-app]]
+name = "default"
+app-id = 42
+secret-key = "private-key.pem"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(true).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "webhook-target 'nats' requires a [nats] config block"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_nats_token_path() {
+        let config: Config = toml::from_str(
+            r#"
+webhook-target = "nats"
+
+[nats]
+endpoint = "nats://nats.example.com:4222"
+subject-base = "idcat.github.webhook"
+token-path = ""
+
+[[github-app]]
+name = "default"
+app-id = 42
+secret-key = "private-key.pem"
+"#,
+        )
+        .unwrap();
+
+        let error = config.validate(true).unwrap_err().to_string();
+        assert_eq!(error, "nats token-path must not be empty when set");
     }
 
     #[test]

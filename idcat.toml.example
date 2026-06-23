@@ -1,6 +1,13 @@
 bind-address = "0.0.0.0:8080"
 key-source = "local"
 private-key-directory = "/var/run/secrets/idcat"
+# Optional: publish GitHub webhook callbacks to NATS.
+# webhook-target = "nats"
+#
+# [nats]
+# endpoint = "nats://nats.example.com:4222"
+# subject-base = "idcat.github.webhook"
+# token-path = "/var/run/secrets/idcat/nats-token"
 
 [[role]]
 name = "kubernetes-default"
