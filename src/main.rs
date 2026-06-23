@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     };
     tracing_subscriber::registry()
         .with(EnvFilter::new(log_filter))
-        .with(tracing_subscriber::fmt::layer().compact())
+        .with(tracing_subscriber::fmt::layer().json().with_ansi(false))
         .init();
 
     if let Err(error) = run(cli).await {

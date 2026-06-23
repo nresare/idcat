@@ -33,7 +33,7 @@ tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "sig
 toml = "1.1"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 wildmatch = "2.4"
 
 [dev-dependencies]
