@@ -1,0 +1,32 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: No default features
+            flags: --no-default-features
+          - name: All features
+            flags: --all-features
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install rustfmt
+      run: rustup component add rustfmt clippy
+    - name: Format check
+      run: cargo fmt --check
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests with $${{ matrix.name }}
+      run: cargo test --verbose ${{ matrix.flags }}
+    - name: Clippy check
+      run: cargo clippy --no-deps
