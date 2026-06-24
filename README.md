@@ -1,8 +1,22 @@
 # idcat
 
-`idcat` is a small Axum service that hides the GitHub App authentication dance behind one internal endpoint.
+`idcat` is a service for safely delegating GitHub App permissions
 
-It reads a GitHub App RSA private key from the filesystem, signs a short-lived GitHub App JWT, and exchanges that JWT for a GitHub installation access token.
+It allows authenticated callers to get GitHub App installation access tokens without having
+direct access to the app’s private signing key. Instead, services and workflows are authenticated with
+idcat using JWT bearer tokens. Based on the issuer and claims in those tokens, idcat can
+issue installation tokens with precisely the permissions needed for a particular use case.
+
+This makes it possible to grant applications and services controlled access to GitHub through
+a GitHub App, while keeping the app’s signing credentials centralised and protected.
+
+## Features
+
+- A High-performance, high-availability service written in Rust using Tokio and Axum
+- Signing keys can optionally be stored in AWS KMS, making it more difficult for an attacker to get hold of sensitive
+  material
+- The centralised configuration setup encourages granting only permissions that are actually needed
+- The ability to bridge webhook notifications from GitHub into the NATS messaging service 
 
 ## Configuration
 
@@ -13,9 +27,7 @@ private-key-directory = "/var/run/secrets/idcat"
 name = "kubernetes-default"
 audience = "idcat"
 issuer = "https://kubernetes.default.svc"
-
-[role.claims]
-sub = "system:serviceaccount:default:default"
+claims = {sub = "system:serviceaccount:default:default"}
 
 [[role]]
 name = "github-workflow"
@@ -32,9 +44,7 @@ allowed-roles = ["kubernetes-default"]
 github-app = "deployments"
 repositories = ["myorg/alfa", "myorg/beta"]
 role = "github-workflow"
-
-[installation-policy.required-claims]
-repository = "myorg/gamma"
+required-claims = { repository = "myorg/gamma" }
 ```
 
 See `idcat.toml.example` for a fuller configuration with multiple roles and GitHub Apps.
