@@ -27,10 +27,13 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install python
+        run: uv venv && uv pip install bktools --extra-index-url https://repo.noa.re
+
       - name: Compute Docker image tag
         id: image-version
         run: |
-          image_version="$(uv run --locked --group dev bktools-image-version-hash)"
+          image_version="$(uv run bktools-image-version-hash)"
           echo "tag=public.ecr.aws/q3z6g1h3/idcat:${image_version}" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
