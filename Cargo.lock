@@ -1490,7 +1490,7 @@ dependencies = [
  "base64",
  "clap",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "jsonwebtoken",
  "reqwest",
  "rsa",
