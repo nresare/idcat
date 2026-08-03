@@ -120,12 +120,12 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "authzoo"
-version = "0.1.2"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c04a6a84ff67304c17beeac126f0ec501e3dd853ec88fc9f9a0b19fc25b56baf"
+checksum = "c9573cce14e7c437d31aaaed32c188934a303d6b18dd397ba061cb2e35ba6963"
 dependencies = [
  "anyhow",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -1494,7 +1494,7 @@ dependencies = [
  "clap",
  "hex",
  "hmac 0.12.1",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "reqwest",
  "rsa",
  "serde",
@@ -1634,6 +1634,30 @@ name = "jsonwebtoken"
 version = "10.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hmac 0.12.1",
+ "js-sys",
+ "p256",
+ "p384",
+ "pem",
+ "rand 0.8.7",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
 dependencies = [
  "base64",
  "ed25519-dalek",
